@@ -810,9 +810,15 @@ fn extract_citations(
                 let chunk_idx = (index - 1) as usize;
                 if chunk_idx < chunks.len() {
                     let chunk = &chunks[chunk_idx];
-                    // Truncate excerpt to ~300 chars
+                    // Truncate excerpt to ~300 chars, respecting UTF-8 char boundaries
                     let excerpt = if chunk.content.len() > 300 {
-                        format!("{}...", &chunk.content[..297])
+                        // Find a safe character boundary near 297 bytes
+                        let truncate_pos = chunk.content.char_indices()
+                            .take_while(|(i, _)| *i < 297)
+                            .last()
+                            .map(|(i, c)| i + c.len_utf8())
+                            .unwrap_or(0);
+                        format!("{}...", &chunk.content[..truncate_pos])
                     } else {
                         chunk.content.clone()
                     };
