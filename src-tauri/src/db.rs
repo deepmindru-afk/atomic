@@ -25,7 +25,14 @@ impl Database {
         std::fs::create_dir_all(&app_data_dir)
             .map_err(|e| format!("Failed to create app data directory: {}", e))?;
 
-        let db_path = app_data_dir.join("atomic.db");
+        // Check for custom database name via environment variable
+        // Usage: ATOMIC_DB_NAME=test npm run tauri dev
+        let db_name = std::env::var("ATOMIC_DB_NAME")
+            .map(|name| format!("{}.db", name))
+            .unwrap_or_else(|_| "atomic.db".to_string());
+
+        let db_path = app_data_dir.join(&db_name);
+        eprintln!("Using database: {:?}", db_path);
         let conn = Connection::open(&db_path)
             .map_err(|e| format!("Failed to open database: {}", e))?;
 

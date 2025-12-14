@@ -381,6 +381,8 @@ export function SettingsModal({ isOpen, onClose, isSetupMode = false }: Settings
   const [wikiModel, setWikiModel] = useState('anthropic/claude-sonnet-4.5');
   const [chatModel, setChatModel] = useState('anthropic/claude-sonnet-4.5');
   const [isSaving, setIsSaving] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   // OpenRouter model loading
@@ -497,17 +499,39 @@ export function SettingsModal({ isOpen, onClose, isSetupMode = false }: Settings
     }
   };
 
-  // Check if provider is properly configured (for setup mode validation)
-  const isProviderVerified = provider === 'openrouter'
-    ? testResult === 'success'
+  // Allow save when there's an API key (OpenRouter) or connected (Ollama)
+  // Connection test happens automatically on save if not already verified
+  const canSave = provider === 'openrouter'
+    ? !!apiKey.trim()
     : ollamaStatus === 'connected';
 
-  // In setup mode, save is only allowed when provider is verified
-  const canSave = isSetupMode ? isProviderVerified : true;
-
   const handleSave = async () => {
-    // In setup mode, require verified connection
-    if (isSetupMode && !isProviderVerified) {
+    setSaveError(null);
+
+    // For OpenRouter, test connection if not already verified
+    if (provider === 'openrouter' && testResult !== 'success') {
+      if (!apiKey.trim()) {
+        setSaveError('Please enter an API key');
+        return;
+      }
+
+      setIsConnecting(true);
+      try {
+        await testOpenRouterConnection(apiKey);
+        setTestResult('success');
+      } catch (e) {
+        setTestResult('error');
+        setTestError(String(e));
+        setSaveError('Connection failed. Please check your API key.');
+        setIsConnecting(false);
+        return;
+      }
+      setIsConnecting(false);
+    }
+
+    // For Ollama, verify connection status
+    if (provider === 'ollama' && ollamaStatus !== 'connected') {
+      setSaveError('Please connect to Ollama first');
       return;
     }
 
@@ -534,6 +558,7 @@ export function SettingsModal({ isOpen, onClose, isSetupMode = false }: Settings
       onClose();
     } catch (e) {
       console.error('Failed to save settings:', e);
+      setSaveError('Failed to save settings');
     } finally {
       setIsSaving(false);
     }
@@ -1000,15 +1025,26 @@ export function SettingsModal({ isOpen, onClose, isSetupMode = false }: Settings
         </div>
 
         {/* Footer */}
-        <div className="flex justify-end gap-3 px-6 py-4 border-t border-[var(--color-border)]">
-          {!isSetupMode && (
-            <Button variant="secondary" onClick={onClose}>
-              Cancel
-            </Button>
+        <div className="px-6 py-4 border-t border-[var(--color-border)] space-y-3">
+          {/* Save Error */}
+          {saveError && (
+            <div className="flex items-start gap-2 text-sm text-red-500">
+              <svg className="w-4 h-4 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span>{saveError}</span>
+            </div>
           )}
-          <Button onClick={handleSave} disabled={isSaving || !canSave}>
-            {isSaving ? 'Saving...' : isSetupMode ? 'Get Started' : 'Save'}
-          </Button>
+          <div className="flex justify-end gap-3">
+            {!isSetupMode && (
+              <Button variant="secondary" onClick={onClose}>
+                Cancel
+              </Button>
+            )}
+            <Button onClick={handleSave} disabled={isSaving || isConnecting || !canSave}>
+              {isConnecting ? 'Connecting...' : isSaving ? 'Saving...' : isSetupMode ? 'Get Started' : 'Save'}
+            </Button>
+          </div>
         </div>
       </div>
     </div>,
