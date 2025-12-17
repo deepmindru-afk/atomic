@@ -29,6 +29,9 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 futures = "0.3"
 regex = "1"
 tiktoken-rs = "0.6"
+glob = "0.3"
+yaml-rust2 = "0.11"
+urlencoding = "2"
 actix-web = "4.9"
 actix-cors = "0.7"
 async-trait = "0.1"
@@ -38,10 +41,4 @@ rmcp = { version = "0.10", features = ["server", "macros", "transport-streamable
 rmcp-actix-web = "0.8"
 schemars = "1.0"
 
-[profile.release]
-opt-level = "z"        # Optimize for size
-lto = true             # Enable Link Time Optimization
-codegen-units = 1      # Better optimization (slower compile)
-strip = true           # Strip symbols to reduce binary size
-panic = "abort"        # Smaller binary by removing unwinding code
 

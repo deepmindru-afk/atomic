@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = [
+    "src-tauri",
+    "crates/mcp-bridge",
+    "crates/atomic-mcp",
+]
+
+[profile.release]
+opt-level = "z"        # Optimize for size
+lto = true             # Enable Link Time Optimization
+codegen-units = 1      # Better optimization (slower compile)
+strip = true           # Strip symbols to reduce binary size
+panic = "abort"        # Smaller binary by removing unwinding code

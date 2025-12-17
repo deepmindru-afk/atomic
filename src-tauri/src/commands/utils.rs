@@ -1,4 +1,4 @@
-//! Utility commands (database verification, tag compaction)
+//! Utility commands (database verification, tag compaction, MCP bridge)
 
 use crate::compaction;
 use crate::db::Database;
@@ -7,7 +7,7 @@ use crate::providers::{
     ProviderConfig, ProviderType,
 };
 use crate::settings;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 #[tauri::command]
 pub fn check_sqlite_vec(db: State<Database>) -> Result<String, String> {
@@ -164,4 +164,30 @@ pub async fn compact_tags(
     );
 
     Ok(result)
+}
+
+/// Get the path to the bundled MCP server binary
+#[tauri::command]
+pub fn get_mcp_bridge_path(app_handle: AppHandle) -> Result<String, String> {
+    let path = app_handle
+        .path()
+        .resolve("binaries/atomic-mcp", tauri::path::BaseDirectory::Resource)
+        .map_err(|e| format!("Failed to resolve MCP server path: {}", e))?;
+
+    // The sidecar binary gets a platform-specific suffix added by Tauri
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// Get MCP configuration snippet for Claude Desktop
+#[tauri::command]
+pub fn get_mcp_config(app_handle: AppHandle) -> Result<serde_json::Value, String> {
+    let mcp_path = get_mcp_bridge_path(app_handle)?;
+
+    Ok(serde_json::json!({
+        "mcpServers": {
+            "atomic": {
+                "command": mcp_path
+            }
+        }
+    }))
 }

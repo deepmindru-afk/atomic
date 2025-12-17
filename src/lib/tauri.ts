@@ -244,3 +244,20 @@ export async function importObsidianVault(
   return invoke('import_obsidian_vault', { vaultPath, maxNotes });
 }
 
+// MCP Bridge commands
+export interface McpConfig {
+  mcpServers: {
+    atomic: {
+      command: string;
+    };
+  };
+}
+
+export async function getMcpBridgePath(): Promise<string> {
+  return invoke('get_mcp_bridge_path');
+}
+
+export async function getMcpConfig(): Promise<McpConfig> {
+  return invoke('get_mcp_config');
+}
+

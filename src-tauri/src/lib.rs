@@ -10,6 +10,7 @@ mod extraction;
 mod http_server;
 mod mcp;
 mod models;
+mod obsidian;
 mod providers;
 mod search;
 mod settings;
@@ -133,6 +134,9 @@ pub fn run() {
             commands::compact_tags,
             // Import commands
             commands::import_obsidian_vault,
+            // MCP bridge commands
+            commands::get_mcp_bridge_path,
+            commands::get_mcp_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

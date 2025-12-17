@@ -1,4 +1,6 @@
 src-tauri/target/
+src-tauri/binaries/
+target/
 node_modules/
 dist/
 gen/

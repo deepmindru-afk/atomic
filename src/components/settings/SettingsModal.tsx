@@ -2,15 +2,19 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Button } from '../ui/Button';
 import { useSettingsStore } from '../../stores/settings';
+import { useAtomsStore } from '../../stores/atoms';
+import { useTagsStore } from '../../stores/tags';
 import { THEMES, Theme } from '../../hooks/useTheme';
 import {
   getAvailableLlmModels,
   testOllamaConnection,
   getOllamaModels,
   importObsidianVault,
+  getMcpConfig,
   type AvailableModel,
   type OllamaModel,
-  type ImportResult
+  type ImportResult,
+  type McpConfig
 } from '../../lib/tauri';
 import { open } from '@tauri-apps/plugin-dialog';
 
@@ -394,6 +398,11 @@ export function SettingsModal({ isOpen, onClose, isSetupMode = false }: Settings
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
 
+  // MCP setup state
+  const [showMcpSetup, setShowMcpSetup] = useState(false);
+  const [mcpConfig, setMcpConfig] = useState<McpConfig | null>(null);
+  const [mcpConfigCopied, setMcpConfigCopied] = useState(false);
+
   const overlayRef = useRef<HTMLDivElement>(null);
 
   // Check Ollama connection
@@ -571,7 +580,36 @@ export function SettingsModal({ isOpen, onClose, isSetupMode = false }: Settings
     setTestError(null);
   };
 
+  // Handle MCP setup expand
+  const handleMcpExpand = async () => {
+    const newState = !showMcpSetup;
+    setShowMcpSetup(newState);
+    if (newState && !mcpConfig) {
+      try {
+        const config = await getMcpConfig();
+        setMcpConfig(config);
+      } catch (e) {
+        console.error('Failed to get MCP config:', e);
+      }
+    }
+  };
+
+  // Copy MCP config to clipboard
+  const handleCopyMcpConfig = async () => {
+    if (!mcpConfig) return;
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(mcpConfig, null, 2));
+      setMcpConfigCopied(true);
+      setTimeout(() => setMcpConfigCopied(false), 2000);
+    } catch (e) {
+      console.error('Failed to copy:', e);
+    }
+  };
+
   // Handle Obsidian import
+  const fetchAtoms = useAtomsStore((state) => state.fetchAtoms);
+  const fetchTags = useTagsStore((state) => state.fetchTags);
+
   const handleObsidianImport = async () => {
     setImportResult(null);
     setImportError(null);
@@ -592,6 +630,11 @@ export function SettingsModal({ isOpen, onClose, isSetupMode = false }: Settings
 
       const result = await importObsidianVault(selected as string);
       setImportResult(result);
+
+      // Refresh atoms and tags to show imported content
+      if (result.imported > 0) {
+        await Promise.all([fetchAtoms(), fetchTags()]);
+      }
     } catch (e) {
       setImportError(String(e));
     } finally {
@@ -1018,6 +1061,83 @@ export function SettingsModal({ isOpen, onClose, isSetupMode = false }: Settings
                 <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-md text-sm">
                   <div className="text-red-400 font-medium mb-1">Import failed</div>
                   <div className="text-[var(--color-text-secondary)]">{importError}</div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* MCP Server Setup Section */}
+          {!isSetupMode && (
+            <div className="space-y-3 pt-4 border-t border-[var(--color-border)]">
+              <button
+                type="button"
+                onClick={handleMcpExpand}
+                className="flex items-center gap-2 text-sm font-medium text-[var(--color-text-primary)] hover:text-white transition-colors w-full"
+              >
+                <svg
+                  className={`w-4 h-4 transition-transform ${showMcpSetup ? 'rotate-90' : ''}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+                Claude Desktop Integration
+              </button>
+
+              {showMcpSetup && (
+                <div className="space-y-4 pl-6 border-l-2 border-[var(--color-border)]">
+                  <p className="text-xs text-[var(--color-text-secondary)]">
+                    Connect Atomic to Claude Desktop as an MCP server. This allows Claude to search and create notes in your knowledge base.
+                  </p>
+
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium text-[var(--color-text-primary)]">Setup Instructions</div>
+                    <ol className="text-xs text-[var(--color-text-secondary)] space-y-2 list-decimal list-inside">
+                      <li>
+                        Open Claude Desktop settings
+                        <span className="text-[var(--color-text-tertiary)]"> (Claude → Settings → Developer)</span>
+                      </li>
+                      <li>Click "Edit Config" to open claude_desktop_config.json</li>
+                      <li>Add the following configuration:</li>
+                    </ol>
+                  </div>
+
+                  {/* Config JSON */}
+                  <div className="relative">
+                    <pre className="p-3 bg-[var(--color-bg-main)] border border-[var(--color-border)] rounded-md text-xs text-[var(--color-text-primary)] overflow-x-auto">
+                      {mcpConfig ? JSON.stringify(mcpConfig, null, 2) : 'Loading...'}
+                    </pre>
+                    <button
+                      type="button"
+                      onClick={handleCopyMcpConfig}
+                      disabled={!mcpConfig}
+                      className="absolute top-2 right-2 p-1.5 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors disabled:opacity-50"
+                      title="Copy to clipboard"
+                    >
+                      {mcpConfigCopied ? (
+                        <svg className="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
+                      ) : (
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                      )}
+                    </button>
+                  </div>
+
+                  <ol start={4} className="text-xs text-[var(--color-text-secondary)] space-y-2 list-decimal list-inside">
+                    <li>Save the config file and restart Claude Desktop</li>
+                    <li>
+                      Verify by checking for "atomic" in Claude's MCP servers
+                      <span className="text-[var(--color-text-tertiary)]"> (hammer icon)</span>
+                    </li>
+                  </ol>
+
+                  <div className="p-3 bg-green-500/10 border border-green-500/30 rounded-md text-xs text-green-400">
+                    <strong>Note:</strong> The MCP server runs independently and connects directly to your Atomic database. Atomic doesn't need to be running for Claude to access your notes.
+                  </div>
                 </div>
               )}
             </div>

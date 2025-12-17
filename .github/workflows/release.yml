@@ -56,13 +56,27 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            src-tauri/target/
+            target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
       - name: Install frontend dependencies
         run: npm ci
+
+      - name: Build MCP server (macOS universal)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          npm run build:mcp-bridge -- --target aarch64-apple-darwin
+          npm run build:mcp-bridge -- --target x86_64-apple-darwin
+
+      - name: Build MCP server (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: npm run build:mcp-bridge -- --target x86_64-unknown-linux-gnu
+
+      - name: Build MCP server (Windows)
+        if: matrix.platform == 'windows-latest'
+        run: npm run build:mcp-bridge -- --target x86_64-pc-windows-msvc
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
