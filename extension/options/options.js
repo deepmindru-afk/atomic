@@ -54,12 +54,15 @@ testBtn.addEventListener('click', async () => {
   testBtn.textContent = 'Testing...';
 
   try {
-    const response = await fetch(`${serverUrl}/health`, {
+    // Hit an authenticated endpoint to verify both connectivity and token
+    const response = await fetch(`${serverUrl}/api/atoms?limit=1`, {
       headers: authHeaders(apiToken)
     });
 
     if (response.ok) {
-      showMessage('Connection successful', 'success');
+      showMessage('Connection successful — token is valid', 'success');
+    } else if (response.status === 401) {
+      showMessage('Connected but token is invalid — check your API token', 'error');
     } else {
       showMessage(`Connection failed: HTTP ${response.status}`, 'error');
     }
