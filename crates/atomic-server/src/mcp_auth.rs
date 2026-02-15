@@ -3,39 +3,20 @@
 //! Similar to `auth::BearerAuth` but returns `WWW-Authenticate` header with
 //! `resource_metadata` pointing to the OAuth discovery endpoint, as required
 //! by the MCP spec for OAuth-capable servers.
+//!
+//! Uses `EitherBody` so that 401 responses flow back through the CORS
+//! middleware as `Ok(response)` rather than `Err(error)` — this ensures
+//! cross-origin MCP clients (like the MCP Inspector) receive CORS headers
+//! on auth failures too.
 
 use crate::state::AppState;
+use actix_web::body::EitherBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
 use actix_web::web;
 use actix_web::Error;
 use actix_web::HttpResponse;
 use futures::future::{ok, LocalBoxFuture, Ready};
 use std::task::{Context, Poll};
-
-/// Custom error type that produces a 401 with the MCP-required `WWW-Authenticate` header.
-#[derive(Debug)]
-struct McpUnauthorized {
-    www_authenticate: String,
-    message: &'static str,
-}
-
-impl std::fmt::Display for McpUnauthorized {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
-
-impl actix_web::ResponseError for McpUnauthorized {
-    fn status_code(&self) -> actix_web::http::StatusCode {
-        actix_web::http::StatusCode::UNAUTHORIZED
-    }
-
-    fn error_response(&self) -> HttpResponse {
-        HttpResponse::Unauthorized()
-            .insert_header(("WWW-Authenticate", self.www_authenticate.clone()))
-            .json(serde_json::json!({"error": self.message}))
-    }
-}
 
 /// Middleware for the `/mcp` scope that verifies Bearer tokens and returns
 /// MCP-compliant `WWW-Authenticate` headers on 401.
@@ -48,7 +29,7 @@ where
     S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
     B: 'static,
 {
-    type Response = ServiceResponse<B>;
+    type Response = ServiceResponse<EitherBody<B>>;
     type Error = Error;
     type Transform = McpAuthMiddleware<S>;
     type InitError = ();
@@ -72,7 +53,7 @@ where
     S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
     B: 'static,
 {
-    type Response = ServiceResponse<B>;
+    type Response = ServiceResponse<EitherBody<B>>;
     type Error = Error;
     type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
 
@@ -106,11 +87,11 @@ where
             Some(t) => t,
             None => {
                 return Box::pin(async move {
-                    Err(McpUnauthorized {
-                        www_authenticate,
-                        message: "unauthorized",
-                    }
-                    .into())
+                    Ok(req.into_response(
+                        HttpResponse::Unauthorized()
+                            .insert_header(("WWW-Authenticate", www_authenticate))
+                            .json(serde_json::json!({"error": "unauthorized"})),
+                    ).map_into_right_body())
                 });
             }
         };
@@ -120,11 +101,11 @@ where
             Ok(Some(info)) => info,
             _ => {
                 return Box::pin(async move {
-                    Err(McpUnauthorized {
-                        www_authenticate,
-                        message: "invalid_token",
-                    }
-                    .into())
+                    Ok(req.into_response(
+                        HttpResponse::Unauthorized()
+                            .insert_header(("WWW-Authenticate", www_authenticate))
+                            .json(serde_json::json!({"error": "invalid_token"})),
+                    ).map_into_right_body())
                 });
             }
         };
@@ -137,7 +118,9 @@ where
         });
 
         let fut = self.service.call(req);
-        Box::pin(async move { fut.await })
+        Box::pin(async move {
+            fut.await.map(|res| res.map_into_left_body())
+        })
     }
 }
 
@@ -202,13 +185,22 @@ mod tests {
         let req = actix_test::TestRequest::get()
             .uri("/mcp/ping")
             .to_request();
-        // Middleware returns Err (custom ResponseError), so use try_call_service
-        let resp = actix_test::try_call_service(&app, req).await;
-        assert!(resp.is_err(), "Expected error response for missing token");
+        let resp = actix_test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 401);
+
+        let www_auth = resp
+            .headers()
+            .get("WWW-Authenticate")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(www_auth.contains("resource_metadata="));
+        assert!(www_auth.contains("/.well-known/oauth-protected-resource"));
+        assert!(www_auth.contains("https://atomic.example.com"));
     }
 
     #[actix_web::test]
-    async fn test_invalid_token_returns_401() {
+    async fn test_invalid_token_returns_401_with_www_authenticate() {
         let (state, _) = test_state(Some("https://atomic.example.com"));
         let app = actix_test::init_service(
             App::new().service(
@@ -223,8 +215,16 @@ mod tests {
             .uri("/mcp/ping")
             .insert_header(("Authorization", "Bearer bad_token"))
             .to_request();
-        let resp = actix_test::try_call_service(&app, req).await;
-        assert!(resp.is_err(), "Expected error response for invalid token");
+        let resp = actix_test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 401);
+
+        let www_auth = resp
+            .headers()
+            .get("WWW-Authenticate")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(www_auth.contains("resource_metadata="));
     }
 
     #[actix_web::test]
@@ -247,12 +247,12 @@ mod tests {
             .uri("/mcp/ping")
             .insert_header(("Authorization", format!("Bearer {}", raw_token)))
             .to_request();
-        let resp = actix_test::try_call_service(&app, req).await;
-        assert!(resp.is_err(), "Expected error response for revoked token");
+        let resp = actix_test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 401);
     }
 
     #[actix_web::test]
-    async fn test_no_public_url_still_rejects() {
+    async fn test_no_public_url_still_returns_www_authenticate() {
         let (state, _) = test_state(None);
         let app = actix_test::init_service(
             App::new().service(
@@ -266,7 +266,38 @@ mod tests {
         let req = actix_test::TestRequest::get()
             .uri("/mcp/ping")
             .to_request();
-        let resp = actix_test::try_call_service(&app, req).await;
-        assert!(resp.is_err(), "Expected error response without token");
+        let resp = actix_test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 401);
+
+        let www_auth = resp
+            .headers()
+            .get("WWW-Authenticate")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(www_auth.contains("resource_metadata="));
+    }
+
+    #[actix_web::test]
+    async fn test_401_is_ok_response_not_error() {
+        // Verify that auth failures return Ok(401) not Err, so CORS middleware
+        // can add headers to the response
+        let (state, _) = test_state(Some("https://atomic.example.com"));
+        let app = actix_test::init_service(
+            App::new().service(
+                web::scope("/mcp")
+                    .wrap(McpAuth { state: state.clone() })
+                    .route("/ping", web::get().to(protected_endpoint)),
+            ),
+        )
+        .await;
+
+        let req = actix_test::TestRequest::get()
+            .uri("/mcp/ping")
+            .to_request();
+        // call_service (not try_call_service) — panics if it gets Err
+        // This proves we return Ok(401), not Err
+        let resp = actix_test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 401);
     }
 }
