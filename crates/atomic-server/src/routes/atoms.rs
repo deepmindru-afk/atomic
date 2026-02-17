@@ -103,8 +103,27 @@ pub async fn delete_atom(state: web::Data<AppState>, path: web::Path<String>) ->
 
 // ==================== Tags ====================
 
-pub async fn get_tags(state: web::Data<AppState>) -> HttpResponse {
-    ok_or_error(state.core.get_all_tags())
+#[derive(Deserialize)]
+pub struct GetTagsQuery {
+    pub min_count: Option<i32>,
+}
+
+pub async fn get_tags(
+    state: web::Data<AppState>,
+    query: web::Query<GetTagsQuery>,
+) -> HttpResponse {
+    let min_count = query.min_count.unwrap_or(2);
+    ok_or_error(state.core.get_all_tags_filtered(min_count))
+}
+
+pub async fn get_tag_children(
+    state: web::Data<AppState>,
+    path: web::Path<String>,
+    query: web::Query<GetTagsQuery>,
+) -> HttpResponse {
+    let parent_id = path.into_inner();
+    let min_count = query.min_count.unwrap_or(0);
+    ok_or_error(state.core.get_tag_children(&parent_id, min_count))
 }
 
 #[derive(Deserialize)]

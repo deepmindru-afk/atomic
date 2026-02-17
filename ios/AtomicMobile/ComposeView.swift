@@ -1,17 +1,22 @@
 import SwiftUI
 
 struct ComposeView: View {
-    let api: APIClient
+    let store: AtomStore
     let editingAtom: Atom?
     let onSave: () async -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var content = ""
     @State private var isSaving = false
-    @FocusState private var isFocused: Bool
+
+    init(store: AtomStore, editing atom: Atom? = nil, onSave: @escaping () async -> Void) {
+        self.store = store
+        self.editingAtom = atom
+        self.onSave = onSave
+    }
 
     init(api: APIClient, editing atom: Atom? = nil, onSave: @escaping () async -> Void) {
-        self.api = api
+        self.store = AtomStore(api: api)
         self.editingAtom = atom
         self.onSave = onSave
     }
@@ -27,13 +32,7 @@ struct ComposeView: View {
             ZStack {
                 Theme.bg.ignoresSafeArea()
 
-                TextEditor(text: $content)
-                    .focused($isFocused)
-                    .scrollContentBackground(.hidden)
-                    .foregroundStyle(Theme.textPrimary)
-                    .font(.body)
-                    .padding(.horizontal, 12)
-                    .padding(.top, 8)
+                MarkdownTextView(text: $content)
             }
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
@@ -65,7 +64,6 @@ struct ComposeView: View {
                 if let editingAtom {
                     content = editingAtom.content
                 }
-                isFocused = true
             }
         }
         .presentationBackground(Theme.bg)
@@ -75,9 +73,9 @@ struct ComposeView: View {
         isSaving = true
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         if let editingAtom {
-            _ = try? await api.updateAtom(id: editingAtom.id, content: trimmed)
+            _ = await store.updateAtom(id: editingAtom.id, content: trimmed)
         } else {
-            _ = try? await api.createAtom(content: trimmed)
+            _ = await store.createAtom(content: trimmed)
         }
         await onSave()
         dismiss()

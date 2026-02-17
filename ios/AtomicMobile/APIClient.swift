@@ -65,9 +65,14 @@ final class APIClient: Sendable {
         _ = try await request("/api/atoms/\(id)", method: "DELETE")
     }
 
-    func getTags() async throws -> [Tag] {
+    func getTags() async throws -> [TagWithCount] {
         let data = try await request("/api/tags")
-        return try decode([Tag].self, from: data)
+        return try decode([TagWithCount].self, from: data)
+    }
+
+    func getTagChildren(parentId: String) async throws -> [TagWithCount] {
+        let data = try await request("/api/tags/\(parentId)/children?min_count=0")
+        return try decode([TagWithCount].self, from: data)
     }
 
     func search(query: String, mode: String = "hybrid", limit: Int = 20) async throws -> [SearchResult] {

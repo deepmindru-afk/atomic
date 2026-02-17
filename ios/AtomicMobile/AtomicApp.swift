@@ -4,14 +4,19 @@ import SwiftUI
 struct AtomicApp: App {
     @State private var serverURL = UserDefaults.standard.string(forKey: "serverURL") ?? ""
     @State private var apiToken = UserDefaults.standard.string(forKey: "apiToken") ?? ""
+    @State private var networkMonitor = NetworkMonitor()
 
     var body: some Scene {
         WindowGroup {
-            if let api = makeClient() {
-                ContentView(api: api, serverURL: $serverURL, apiToken: $apiToken)
-            } else {
-                SetupView(serverURL: $serverURL, apiToken: $apiToken)
+            Group {
+                if let api = makeClient() {
+                    ContentView(api: api, serverURL: $serverURL, apiToken: $apiToken)
+                } else {
+                    SetupView(serverURL: $serverURL, apiToken: $apiToken)
+                }
             }
+            .environment(networkMonitor)
+            .onAppear { networkMonitor.start() }
         }
     }
 

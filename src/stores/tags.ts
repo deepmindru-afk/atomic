@@ -10,6 +10,7 @@ export interface Tag {
 
 export interface TagWithCount extends Tag {
   atom_count: number;
+  children_total: number;
   children: TagWithCount[];
 }
 
@@ -25,11 +26,28 @@ interface TagsStore {
   isCompacting: boolean;
   error: string | null;
   fetchTags: () => Promise<void>;
+  fetchTagChildren: (parentId: string) => Promise<void>;
   createTag: (name: string, parentId?: string) => Promise<Tag>;
   updateTag: (id: string, name: string, parentId?: string) => Promise<Tag>;
   deleteTag: (id: string) => Promise<void>;
   compactTags: () => Promise<CompactionResult>;
   clearError: () => void;
+}
+
+function replaceChildrenInTree(
+  nodes: TagWithCount[],
+  parentId: string,
+  newChildren: TagWithCount[],
+): TagWithCount[] {
+  return nodes.map((node) => {
+    if (node.id === parentId) {
+      return { ...node, children: newChildren, children_total: newChildren.length };
+    }
+    if (node.children.length > 0) {
+      return { ...node, children: replaceChildrenInTree(node.children, parentId, newChildren) };
+    }
+    return node;
+  });
 }
 
 export const useTagsStore = create<TagsStore>((set) => ({
@@ -45,6 +63,20 @@ export const useTagsStore = create<TagsStore>((set) => ({
       set({ tags, isLoading: false });
     } catch (error) {
       set({ error: String(error), isLoading: false });
+    }
+  },
+
+  fetchTagChildren: async (parentId: string) => {
+    try {
+      const children = await getTransport().invoke<TagWithCount[]>('get_tag_children', {
+        parentId,
+        minCount: 0,
+      });
+      set((state) => ({
+        tags: replaceChildrenInTree(state.tags, parentId, children),
+      }));
+    } catch (error) {
+      set({ error: String(error) });
     }
   },
 

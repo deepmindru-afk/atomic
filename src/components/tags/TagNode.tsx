@@ -1,5 +1,5 @@
-import { memo, MouseEvent } from 'react';
-import { TagWithCount } from '../../stores/tags';
+import { memo, MouseEvent, useCallback } from 'react';
+import { TagWithCount, useTagsStore } from '../../stores/tags';
 import { useUIStore } from '../../stores/ui';
 
 interface TagNodeProps {
@@ -15,13 +15,18 @@ export const TagNode = memo(function TagNode({ tag, level, selectedTagId, onSele
   const openChatDrawer = useUIStore(s => s.openChatDrawer);
   const isExpanded = useUIStore(s => !!s.expandedTagIds[tag.id]);
   const toggleTagExpanded = useUIStore(s => s.toggleTagExpanded);
-  const hasChildren = tag.children && tag.children.length > 0;
+  const fetchTagChildren = useTagsStore(s => s.fetchTagChildren);
+  const hasChildren = (tag.children && tag.children.length > 0) || tag.children_total > 0;
   const isSelected = selectedTagId === tag.id;
 
-  const handleToggle = (e: MouseEvent) => {
+  const handleToggle = useCallback(async (e: MouseEvent) => {
     e.stopPropagation();
+    // If expanding and there are more children than currently loaded, fetch all
+    if (!isExpanded && tag.children_total > tag.children.length) {
+      await fetchTagChildren(tag.id);
+    }
     toggleTagExpanded(tag.id);
-  };
+  }, [isExpanded, tag.children_total, tag.children.length, tag.id, fetchTagChildren, toggleTagExpanded]);
 
   const handleContextMenu = (e: MouseEvent) => {
     e.preventDefault();

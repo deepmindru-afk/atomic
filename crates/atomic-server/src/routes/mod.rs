@@ -33,6 +33,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     // Tags
     cfg.route("/tags", web::get().to(atoms::get_tags));
     cfg.route("/tags", web::post().to(atoms::create_tag));
+    cfg.route("/tags/{id}/children", web::get().to(atoms::get_tag_children));
     cfg.route("/tags/{id}", web::put().to(atoms::update_tag));
     cfg.route("/tags/{id}", web::delete().to(atoms::delete_tag));
 

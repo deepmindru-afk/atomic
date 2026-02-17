@@ -63,7 +63,21 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
   // ==================== Tags ====================
   get_all_tags: {
     method: 'GET',
-    path: '/api/tags',
+    path: (a) => {
+      const params = new URLSearchParams();
+      if (a.minCount != null) params.set('min_count', String(a.minCount));
+      const qs = params.toString();
+      return `/api/tags${qs ? `?${qs}` : ''}`;
+    },
+  },
+  get_tag_children: {
+    method: 'GET',
+    path: (a) => {
+      const params = new URLSearchParams();
+      if (a.minCount != null) params.set('min_count', String(a.minCount));
+      const qs = params.toString();
+      return `/api/tags/${encodeURIComponent(a.parentId as string)}/children${qs ? `?${qs}` : ''}`;
+    },
   },
   create_tag: {
     method: 'POST',

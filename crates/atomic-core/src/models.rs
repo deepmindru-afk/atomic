@@ -37,6 +37,7 @@ pub struct TagWithCount {
     #[serde(flatten)]
     pub tag: Tag,
     pub atom_count: i32,
+    pub children_total: i32,
     pub children: Vec<TagWithCount>,
 }
 

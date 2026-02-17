@@ -589,13 +589,47 @@ impl AtomicCore {
 
     // ==================== Tag Operations ====================
 
-    /// Get all tags with counts (hierarchical tree)
+    /// Get all tags with counts (hierarchical tree), no filtering
     pub fn get_all_tags(&self) -> Result<Vec<TagWithCount>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        self.get_all_tags_filtered(0)
+    }
 
+    /// Get tags with counts, pruning leaf nodes below `min_count`.
+    /// Sorted by atom_count descending at every level.
+    pub fn get_all_tags_filtered(&self, min_count: i32) -> Result<Vec<TagWithCount>, AtomicCoreError> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let (all_tags, direct_counts) = Self::load_tags_and_counts(&conn)?;
+        Ok(build_tag_tree_with_counts(&all_tags, None, &direct_counts, min_count))
+    }
+
+    /// Get direct children of a specific tag, optionally filtered by min_count.
+    pub fn get_tag_children(&self, parent_id: &str, min_count: i32) -> Result<Vec<TagWithCount>, AtomicCoreError> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let (all_tags, direct_counts) = Self::load_tags_and_counts(&conn)?;
+
+        // Build full tree from this parent down, then return only direct children
+        let full_tree = build_tag_tree_with_counts(&all_tags, None, &direct_counts, min_count);
+
+        // Find the parent node and return its children
+        fn find_children(nodes: &[TagWithCount], parent_id: &str) -> Option<Vec<TagWithCount>> {
+            for node in nodes {
+                if node.tag.id == parent_id {
+                    return Some(node.children.clone());
+                }
+                if let Some(found) = find_children(&node.children, parent_id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+
+        Ok(find_children(&full_tree, parent_id).unwrap_or_default())
+    }
+
+    /// Load all tags and their direct counts from the database.
+    fn load_tags_and_counts(conn: &Connection) -> Result<(Vec<Tag>, HashMap<String, i32>), AtomicCoreError> {
         let mut stmt = conn
-            .prepare("SELECT id, name, parent_id, created_at FROM tags ORDER BY name")
-            ?;
+            .prepare("SELECT id, name, parent_id, created_at FROM tags ORDER BY name")?;
 
         let all_tags: Vec<Tag> = stmt
             .query_map([], |row| {
@@ -605,15 +639,12 @@ impl AtomicCore {
                     parent_id: row.get(2)?,
                     created_at: row.get(3)?,
                 })
-            })
-            ?
-            .collect::<Result<Vec<_>, _>>()
-            ?;
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
 
-        // Single query for all direct tag counts
         let mut count_stmt = conn
             .prepare("SELECT tag_id, COUNT(*) FROM atom_tags GROUP BY tag_id")?;
-        let mut direct_counts: std::collections::HashMap<String, i32> = std::collections::HashMap::new();
+        let mut direct_counts: HashMap<String, i32> = HashMap::new();
         let count_rows = count_stmt
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?))
@@ -623,7 +654,7 @@ impl AtomicCore {
             direct_counts.insert(tag_id, count);
         }
 
-        Ok(build_tag_tree_with_counts(&all_tags, None, &direct_counts))
+        Ok((all_tags, direct_counts))
     }
 
     /// Create a new tag
@@ -2218,10 +2249,16 @@ fn get_descendant_ids(tag_id: &str, all_tags: &[Tag]) -> Vec<String> {
 /// Build hierarchical tag tree with counts using pre-computed direct counts.
 /// Each parent's count = its own direct count + sum of children's counts.
 /// (May double-count atoms tagged with both parent and child; acceptable for display.)
+///
+/// Children are sorted by `atom_count` descending. When `min_count > 0`, leaf
+/// nodes with `atom_count < min_count` are pruned (structural parents are kept).
+/// `children_total` records the unfiltered child count so clients know when to
+/// fetch the full list.
 fn build_tag_tree_with_counts(
     all_tags: &[Tag],
     _parent_id: Option<&str>,
     direct_counts: &std::collections::HashMap<String, i32>,
+    min_count: i32,
 ) -> Vec<TagWithCount> {
     // Build index: parent_id -> children, so each lookup is O(1) instead of O(N)
     let mut children_by_parent: std::collections::HashMap<Option<&str>, Vec<&Tag>> =
@@ -2237,27 +2274,47 @@ fn build_tag_tree_with_counts(
         parent_id: Option<&str>,
         children_by_parent: &std::collections::HashMap<Option<&str>, Vec<&Tag>>,
         direct_counts: &std::collections::HashMap<String, i32>,
+        min_count: i32,
+        is_root: bool,
     ) -> Vec<TagWithCount> {
         let Some(children) = children_by_parent.get(&parent_id) else {
             return Vec::new();
         };
-        children
+        let children_total = children.len() as i32;
+        let mut result: Vec<TagWithCount> = children
             .iter()
             .map(|tag| {
                 let child_nodes =
-                    build_subtree(Some(&tag.id), children_by_parent, direct_counts);
+                    build_subtree(Some(&tag.id), children_by_parent, direct_counts, min_count, false);
                 let own_count = direct_counts.get(&tag.id).copied().unwrap_or(0);
                 let children_count: i32 = child_nodes.iter().map(|c| c.atom_count).sum();
                 TagWithCount {
                     tag: (*tag).clone(),
                     atom_count: own_count + children_count,
+                    children_total: children_by_parent
+                        .get(&Some(tag.id.as_str()))
+                        .map(|c| c.len() as i32)
+                        .unwrap_or(0),
                     children: child_nodes,
                 }
             })
-            .collect()
+            .filter(|t| {
+                if min_count <= 0 || is_root {
+                    true // keep all roots and when no filtering
+                } else {
+                    // Keep if meets threshold OR has qualifying children (structural parent)
+                    t.atom_count >= min_count || !t.children.is_empty()
+                }
+            })
+            .collect();
+        // Sort children by atom_count descending
+        result.sort_by(|a, b| b.atom_count.cmp(&a.atom_count));
+        // Preserve children_total from before filtering (set on parent via caller)
+        let _ = children_total; // used by caller
+        result
     }
 
-    build_subtree(None, &children_by_parent, direct_counts)
+    build_subtree(None, &children_by_parent, direct_counts, min_count, true)
 }
 
 #[cfg(test)]

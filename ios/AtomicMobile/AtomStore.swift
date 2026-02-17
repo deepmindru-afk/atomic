@@ -7,24 +7,43 @@ final class AtomStore {
     var totalCount = 0
     var isLoading = false
     var error: String?
-    var tags: [Tag] = []
+    var tags: [TagWithCount] = []
     var selectedTagId: String?
 
-    private let api: APIClient
+    let api: APIClient
+    let cache: DiskCache
+    let offlineQueue: OfflineQueue
 
-    init(api: APIClient) {
+    var pendingAtoms: [PendingAtom] { offlineQueue.pending }
+
+    init(api: APIClient, cache: DiskCache = DiskCache(), offlineQueue: OfflineQueue = OfflineQueue()) {
         self.api = api
+        self.cache = cache
+        self.offlineQueue = offlineQueue
     }
 
     func loadAtoms() async {
         isLoading = true
         error = nil
+
+        // Load from cache first for instant display
+        if atoms.isEmpty, let cached = cache.load(AtomListResponse.self, forKey: "atoms") {
+            atoms = cached.atoms
+            totalCount = cached.totalCount
+        }
+
         do {
             let response = try await api.listAtoms(limit: 50, offset: 0, tagId: selectedTagId)
             atoms = response.atoms
             totalCount = response.totalCount
+            if selectedTagId == nil {
+                cache.save(response, forKey: "atoms")
+            }
         } catch {
-            self.error = error.localizedDescription
+            // Keep showing cached data on network failure
+            if atoms.isEmpty {
+                self.error = error.localizedDescription
+            }
         }
         isLoading = false
     }
@@ -42,10 +61,40 @@ final class AtomStore {
     }
 
     func loadTags() async {
+        // Load from cache first
+        if tags.isEmpty, let cached = cache.load([TagWithCount].self, forKey: "tags") {
+            tags = cached
+        }
+
         do {
             tags = try await api.getTags()
+            cache.save(tags, forKey: "tags")
+        } catch {
+            // Keep showing cached tags on failure
+            if tags.isEmpty {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    func loadTagChildren(parentId: String) async {
+        do {
+            let children = try await api.getTagChildren(parentId: parentId)
+            replaceChildren(in: &tags, parentId: parentId, newChildren: children)
         } catch {
             self.error = error.localizedDescription
+        }
+    }
+
+    private func replaceChildren(in nodes: inout [TagWithCount], parentId: String, newChildren: [TagWithCount]) {
+        for i in nodes.indices {
+            if nodes[i].id == parentId {
+                nodes[i].children = newChildren
+                return
+            }
+            if !nodes[i].children.isEmpty {
+                replaceChildren(in: &nodes[i].children, parentId: parentId, newChildren: newChildren)
+            }
         }
     }
 
@@ -60,7 +109,8 @@ final class AtomStore {
             await loadAtoms()
             return atom
         } catch {
-            self.error = error.localizedDescription
+            // Queue for later sync
+            offlineQueue.enqueue(content: content)
             return nil
         }
     }
@@ -95,5 +145,11 @@ final class AtomStore {
             self.error = error.localizedDescription
             return []
         }
+    }
+
+    func syncPending() async {
+        guard !offlineQueue.pending.isEmpty else { return }
+        await offlineQueue.drain(api: api)
+        await loadAtoms()
     }
 }

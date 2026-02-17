@@ -4,6 +4,7 @@ import MarkdownUI
 struct AtomDetailView: View {
     let api: APIClient
     let atomId: String
+    let cache: DiskCache
     let onDelete: (() async -> Void)?
 
     @State private var atom: Atom?
@@ -14,9 +15,10 @@ struct AtomDetailView: View {
     @State private var isDeleting = false
     @Environment(\.dismiss) private var dismiss
 
-    init(api: APIClient, atomId: String, onDelete: (() async -> Void)? = nil) {
+    init(api: APIClient, atomId: String, cache: DiskCache = DiskCache(), onDelete: (() async -> Void)? = nil) {
         self.api = api
         self.atomId = atomId
+        self.cache = cache
         self.onDelete = onDelete
     }
 
@@ -102,9 +104,16 @@ struct AtomDetailView: View {
 
     private func reload() async {
         do {
-            atom = try await api.getAtom(id: atomId)
+            let fetched = try await api.getAtom(id: atomId)
+            atom = fetched
+            cache.save(fetched, forKey: "atom-\(atomId)")
         } catch {
-            self.error = error.localizedDescription
+            // Fall back to cached atom detail
+            if let cached = cache.load(Atom.self, forKey: "atom-\(atomId)") {
+                atom = cached
+            } else {
+                self.error = error.localizedDescription
+            }
         }
         isLoading = false
     }

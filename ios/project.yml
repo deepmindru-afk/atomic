@@ -13,6 +13,7 @@ settings:
     MARKETING_VERSION: "0.1.0"
     INFOPLIST_KEY_CFBundleDisplayName: Atomic
     INFOPLIST_KEY_UILaunchScreen_Generation: true
+    INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
     INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
     SWIFT_STRICT_CONCURRENCY: complete
 
@@ -20,6 +21,12 @@ packages:
   MarkdownUI:
     url: https://github.com/gonzalezreal/swift-markdown-ui
     from: "2.4.0"
+  Runestone:
+    url: https://github.com/simonbs/Runestone
+    from: "0.5.0"
+  TreeSitterLanguages:
+    url: https://github.com/simonbs/TreeSitterLanguages
+    from: "0.1.0"
 
 targets:
   AtomicMobile:
@@ -29,7 +36,14 @@ targets:
       - AtomicMobile
     dependencies:
       - package: MarkdownUI
+      - package: Runestone
+      - package: TreeSitterLanguages
+        product: TreeSitterMarkdownRunestone
+      - package: TreeSitterLanguages
+        product: TreeSitterMarkdownInlineRunestone
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.atomic.mobile
         INFOPLIST_KEY_CFBundleDisplayName: Atomic
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: D3SX98L77N

@@ -53,6 +53,24 @@ struct Tag: Codable, Identifiable, Sendable {
     }
 }
 
+struct TagWithCount: Codable, Identifiable, Sendable {
+    let id: String
+    let name: String
+    let parentId: String?
+    let createdAt: String
+    let atomCount: Int
+    let childrenTotal: Int
+    var children: [TagWithCount]
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, children
+        case parentId = "parent_id"
+        case createdAt = "created_at"
+        case atomCount = "atom_count"
+        case childrenTotal = "children_total"
+    }
+}
+
 struct AtomListResponse: Codable, Sendable {
     let atoms: [AtomSummary]
     let totalCount: Int
@@ -82,6 +100,12 @@ struct SearchRequest: Codable, Sendable {
     let mode: String
     let limit: Int?
     let threshold: Double?
+}
+
+struct PendingAtom: Codable, Identifiable, Sendable {
+    let id: String
+    let content: String
+    let createdAt: Date
 }
 
 struct SearchResult: Codable, Identifiable, Sendable {
