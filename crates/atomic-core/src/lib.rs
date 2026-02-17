@@ -603,27 +603,99 @@ impl AtomicCore {
     }
 
     /// Get direct children of a specific tag, optionally filtered by min_count.
+    /// Uses targeted queries instead of building the full tree.
     pub fn get_tag_children(&self, parent_id: &str, min_count: i32) -> Result<Vec<TagWithCount>, AtomicCoreError> {
         let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        let (all_tags, direct_counts) = Self::load_tags_and_counts(&conn)?;
 
-        // Build full tree from this parent down, then return only direct children
-        let full_tree = build_tag_tree_with_counts(&all_tags, None, &direct_counts, min_count);
+        // Only fetch descendants of this parent (not all tags)
+        let mut stmt = conn.prepare(
+            "WITH RECURSIVE descendants AS (
+                SELECT id, name, parent_id, created_at FROM tags WHERE parent_id = ?1
+                UNION ALL
+                SELECT t.id, t.name, t.parent_id, t.created_at
+                FROM tags t JOIN descendants d ON t.parent_id = d.id
+            )
+            SELECT id, name, parent_id, created_at FROM descendants"
+        )?;
+        let subtree_tags: Vec<Tag> = stmt
+            .query_map([parent_id], |row| {
+                Ok(Tag {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    parent_id: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
 
-        // Find the parent node and return its children
-        fn find_children(nodes: &[TagWithCount], parent_id: &str) -> Option<Vec<TagWithCount>> {
-            for node in nodes {
-                if node.tag.id == parent_id {
-                    return Some(node.children.clone());
-                }
-                if let Some(found) = find_children(&node.children, parent_id) {
-                    return Some(found);
-                }
-            }
-            None
+        if subtree_tags.is_empty() {
+            return Ok(Vec::new());
         }
 
-        Ok(find_children(&full_tree, parent_id).unwrap_or_default())
+        // Collect IDs for targeted count query
+        let ids: Vec<&str> = subtree_tags.iter().map(|t| t.id.as_str()).collect();
+        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT tag_id, COUNT(*) FROM atom_tags WHERE tag_id IN ({}) GROUP BY tag_id",
+            placeholders
+        );
+        let mut count_stmt = conn.prepare(&sql)?;
+        let mut direct_counts: HashMap<String, i32> = HashMap::new();
+        let count_rows = count_stmt.query_map(
+            rusqlite::params_from_iter(ids.iter()),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?)),
+        )?;
+        for row in count_rows {
+            let (tag_id, count) = row?;
+            direct_counts.insert(tag_id, count);
+        }
+
+        // Build subtree rooted at parent_id, but shift root to parent_id
+        // so build_tag_tree returns the direct children
+        let mut children_by_parent: HashMap<Option<&str>, Vec<&Tag>> = HashMap::new();
+        for tag in &subtree_tags {
+            children_by_parent
+                .entry(tag.parent_id.as_deref())
+                .or_default()
+                .push(tag);
+        }
+
+        fn build_subtree_from(
+            parent_id: Option<&str>,
+            children_by_parent: &HashMap<Option<&str>, Vec<&Tag>>,
+            direct_counts: &HashMap<String, i32>,
+            min_count: i32,
+        ) -> Vec<TagWithCount> {
+            let Some(children) = children_by_parent.get(&parent_id) else {
+                return Vec::new();
+            };
+            let mut result: Vec<TagWithCount> = children
+                .iter()
+                .map(|tag| {
+                    let child_nodes = build_subtree_from(
+                        Some(&tag.id), children_by_parent, direct_counts, min_count,
+                    );
+                    let own_count = direct_counts.get(&tag.id).copied().unwrap_or(0);
+                    let children_count: i32 = child_nodes.iter().map(|c| c.atom_count).sum();
+                    TagWithCount {
+                        tag: (*tag).clone(),
+                        atom_count: own_count + children_count,
+                        children_total: children_by_parent
+                            .get(&Some(tag.id.as_str()))
+                            .map(|c| c.len() as i32)
+                            .unwrap_or(0),
+                        children: child_nodes,
+                    }
+                })
+                .filter(|t| {
+                    min_count <= 0 || t.atom_count >= min_count || !t.children.is_empty()
+                })
+                .collect();
+            result.sort_by(|a, b| b.atom_count.cmp(&a.atom_count));
+            result
+        }
+
+        Ok(build_subtree_from(Some(parent_id), &children_by_parent, &direct_counts, min_count))
     }
 
     /// Load all tags and their direct counts from the database.
