@@ -19,7 +19,7 @@ const BASE_PRAGMAS: &str = "\
     PRAGMA synchronous=NORMAL; \
     PRAGMA busy_timeout=5000; \
     PRAGMA cache_size=-64000; \
-    PRAGMA mmap_size=268435456; \
+    PRAGMA mmap_size=2147483648; \
     PRAGMA temp_store=MEMORY; \
 ";
 
@@ -96,6 +96,13 @@ impl Database {
         // Always run migrations — idempotent, handles both new and existing DBs
         Self::run_migrations(&conn)?;
 
+        // Update query planner statistics so the optimizer has fresh data
+        conn.execute_batch("PRAGMA optimize=0x10002;")?;
+
+        // Warm the OS page cache and SQLite page cache by touching the indexes
+        // and table pages that the most common queries need on startup.
+        Self::warm_cache(&conn);
+
         let db_path = path.to_path_buf();
 
         // Pre-open read connections for the pool
@@ -145,6 +152,36 @@ impl Database {
         Self::open_with_pool_size(path.as_ref(), false, SERVER_READ_POOL_SIZE)
     }
 
+    /// Walk the hot indexes and table pages into the OS + SQLite page caches.
+    /// Called once at startup so the first real queries don't pay cold-cache costs.
+    fn warm_cache(conn: &Connection) {
+        let _ = conn.execute_batch(
+            "SELECT COUNT(*) FROM atoms;
+             SELECT COUNT(*) FROM atom_tags;
+             SELECT COUNT(*) FROM tags;
+             SELECT 1 FROM atoms ORDER BY updated_at DESC, id DESC LIMIT 1;
+             SELECT tag_id, COUNT(*) FROM atom_tags GROUP BY tag_id LIMIT 1;
+             SELECT id, parent_id, atom_count FROM tags WHERE parent_id IS NOT NULL LIMIT 1;",
+        );
+
+        // Warm the vec_chunks vector index by running a dummy similarity search.
+        // This forces sqlite-vec to scan the full vector data into the OS page cache.
+        let blob: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT embedding FROM atom_chunks WHERE embedding IS NOT NULL LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        if let Some(query_blob) = blob {
+            let _ = conn.query_row(
+                "SELECT chunk_id FROM vec_chunks WHERE embedding MATCH ?1 ORDER BY distance LIMIT 1",
+                rusqlite::params![&query_blob],
+                |row| row.get::<_, String>(0),
+            );
+        }
+    }
+
     /// Run PRAGMA optimize to update query planner statistics.
     /// Call this on graceful shutdown for best effect.
     pub fn optimize(&self) {
@@ -154,254 +191,246 @@ impl Database {
         }
     }
 
-    /// Run database migrations
+    /// Schema version tracked via PRAGMA user_version.
+    /// Each migration runs exactly once; new databases get all of them sequentially.
+    ///
+    /// To add a migration:
+    ///   1. Add a new `if version < N` block at the end (before the virtual-table section)
+    ///   2. End the block with `PRAGMA user_version = N;`
+    ///   3. Bump LATEST_VERSION
+    const LATEST_VERSION: i32 = 2;
+
     pub fn run_migrations(conn: &Connection) -> Result<(), AtomicCoreError> {
-        conn.execute_batch(
-            r#"
-            -- Atoms are the core content units
-            CREATE TABLE IF NOT EXISTS atoms (
-                id TEXT PRIMARY KEY,
-                content TEXT NOT NULL,
-                source_url TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                embedding_status TEXT DEFAULT 'pending',
-                tagging_status TEXT DEFAULT 'pending'
-            );
+        let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
 
-            -- Hierarchical tags
-            CREATE TABLE IF NOT EXISTS tags (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL COLLATE NOCASE,
-                parent_id TEXT REFERENCES tags(id) ON DELETE SET NULL,
-                created_at TEXT NOT NULL,
-                atom_count INTEGER NOT NULL DEFAULT 0,
-                UNIQUE(name COLLATE NOCASE)
-            );
-
-            -- Many-to-many relationship
-            CREATE TABLE IF NOT EXISTS atom_tags (
-                atom_id TEXT REFERENCES atoms(id) ON DELETE CASCADE,
-                tag_id TEXT REFERENCES tags(id) ON DELETE CASCADE,
-                PRIMARY KEY (atom_id, tag_id)
-            );
-
-            -- For Phase 2 embeddings
-            CREATE TABLE IF NOT EXISTS atom_chunks (
-                id TEXT PRIMARY KEY,
-                atom_id TEXT REFERENCES atoms(id) ON DELETE CASCADE,
-                chunk_index INTEGER NOT NULL,
-                content TEXT NOT NULL,
-                embedding BLOB
-            );
-
-            -- Settings table for app configuration
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-
-            -- Wiki articles
-            CREATE TABLE IF NOT EXISTS wiki_articles (
-                id TEXT PRIMARY KEY,
-                tag_id TEXT UNIQUE REFERENCES tags(id) ON DELETE CASCADE,
-                content TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                atom_count INTEGER NOT NULL
-            );
-
-            -- Wiki citations
-            CREATE TABLE IF NOT EXISTS wiki_citations (
-                id TEXT PRIMARY KEY,
-                wiki_article_id TEXT REFERENCES wiki_articles(id) ON DELETE CASCADE,
-                citation_index INTEGER NOT NULL,
-                atom_id TEXT REFERENCES atoms(id) ON DELETE CASCADE,
-                chunk_index INTEGER,
-                excerpt TEXT NOT NULL
-            );
-
-            -- Atom positions for canvas view
-            CREATE TABLE IF NOT EXISTS atom_positions (
-                atom_id TEXT PRIMARY KEY REFERENCES atoms(id) ON DELETE CASCADE,
-                x REAL NOT NULL,
-                y REAL NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-
-            -- Semantic edges for graph visualization
-            CREATE TABLE IF NOT EXISTS semantic_edges (
-                id TEXT PRIMARY KEY,
-                source_atom_id TEXT NOT NULL REFERENCES atoms(id) ON DELETE CASCADE,
-                target_atom_id TEXT NOT NULL REFERENCES atoms(id) ON DELETE CASCADE,
-                similarity_score REAL NOT NULL,
-                source_chunk_index INTEGER,
-                target_chunk_index INTEGER,
-                created_at TEXT NOT NULL,
-                UNIQUE(source_atom_id, target_atom_id)
-            );
-
-            -- Atom cluster assignments
-            CREATE TABLE IF NOT EXISTS atom_clusters (
-                atom_id TEXT PRIMARY KEY REFERENCES atoms(id) ON DELETE CASCADE,
-                cluster_id INTEGER NOT NULL,
-                computed_at TEXT NOT NULL
-            );
-
-            -- Chat conversations
-            CREATE TABLE IF NOT EXISTS conversations (
-                id TEXT PRIMARY KEY,
-                title TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                is_archived INTEGER DEFAULT 0
-            );
-
-            -- Many-to-many: conversation tag scope
-            CREATE TABLE IF NOT EXISTS conversation_tags (
-                conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-                tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-                PRIMARY KEY (conversation_id, tag_id)
-            );
-
-            -- Chat messages
-            CREATE TABLE IF NOT EXISTS chat_messages (
-                id TEXT PRIMARY KEY,
-                conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                message_index INTEGER NOT NULL
-            );
-
-            -- Tool calls for transparency
-            CREATE TABLE IF NOT EXISTS chat_tool_calls (
-                id TEXT PRIMARY KEY,
-                message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
-                tool_name TEXT NOT NULL,
-                tool_input TEXT NOT NULL,
-                tool_output TEXT,
-                status TEXT NOT NULL DEFAULT 'pending',
-                created_at TEXT NOT NULL,
-                completed_at TEXT
-            );
-
-            -- Chat citations
-            CREATE TABLE IF NOT EXISTS chat_citations (
-                id TEXT PRIMARY KEY,
-                message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
-                citation_index INTEGER NOT NULL,
-                atom_id TEXT NOT NULL REFERENCES atoms(id) ON DELETE CASCADE,
-                chunk_index INTEGER,
-                excerpt TEXT NOT NULL,
-                relevance_score REAL
-            );
-
-            -- Core table indexes
-            CREATE INDEX IF NOT EXISTS idx_atoms_updated_id ON atoms(updated_at DESC, id DESC);
-            CREATE INDEX IF NOT EXISTS idx_atoms_embedding_status ON atoms(embedding_status);
-            CREATE INDEX IF NOT EXISTS idx_atoms_tagging_status ON atoms(tagging_status);
-            CREATE INDEX IF NOT EXISTS idx_atom_tags_tag_atom ON atom_tags(tag_id, atom_id);
-
-            -- Drop legacy indexes superseded by composite or PK indexes
-            DROP INDEX IF EXISTS idx_atoms_updated_at;
-            DROP INDEX IF EXISTS idx_atom_tags_atom_id;
-            CREATE INDEX IF NOT EXISTS idx_atom_chunks_atom_id ON atom_chunks(atom_id);
-            CREATE INDEX IF NOT EXISTS idx_semantic_edges_source ON semantic_edges(source_atom_id);
-            CREATE INDEX IF NOT EXISTS idx_semantic_edges_target ON semantic_edges(target_atom_id);
-            CREATE INDEX IF NOT EXISTS idx_semantic_edges_similarity ON semantic_edges(similarity_score DESC);
-            CREATE INDEX IF NOT EXISTS idx_tags_parent_id ON tags(parent_id);
-            CREATE INDEX IF NOT EXISTS idx_wiki_citations_article ON wiki_citations(wiki_article_id);
-
-            -- Indexes for chat tables
-            CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_conversation_tags_conv ON conversation_tags(conversation_id);
-            CREATE INDEX IF NOT EXISTS idx_conversation_tags_tag ON conversation_tags(tag_id);
-            CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages(conversation_id, message_index);
-            CREATE INDEX IF NOT EXISTS idx_chat_tool_calls_message ON chat_tool_calls(message_id);
-            CREATE INDEX IF NOT EXISTS idx_chat_citations_message ON chat_citations(message_id);
-            CREATE INDEX IF NOT EXISTS idx_chat_citations_atom ON chat_citations(atom_id);
-
-            -- API tokens for authentication
-            CREATE TABLE IF NOT EXISTS api_tokens (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                token_hash TEXT NOT NULL,
-                token_prefix TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                last_used_at TEXT,
-                is_revoked INTEGER DEFAULT 0
-            );
-            CREATE INDEX IF NOT EXISTS idx_api_tokens_hash ON api_tokens(token_hash);
-
-            -- OAuth 2.0 tables (for MCP remote auth)
-            CREATE TABLE IF NOT EXISTS oauth_clients (
-                id TEXT PRIMARY KEY,
-                client_id TEXT UNIQUE NOT NULL,
-                client_secret_hash TEXT NOT NULL,
-                client_name TEXT NOT NULL,
-                redirect_uris TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS oauth_codes (
-                code_hash TEXT PRIMARY KEY,
-                client_id TEXT NOT NULL,
-                code_challenge TEXT NOT NULL,
-                code_challenge_method TEXT NOT NULL DEFAULT 'S256',
-                redirect_uri TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                used INTEGER NOT NULL DEFAULT 0,
-                token_id TEXT
-            );
-
-            -- Wiki inter-article links (cross-references between wiki articles)
-            CREATE TABLE IF NOT EXISTS wiki_links (
-                id TEXT PRIMARY KEY,
-                source_article_id TEXT NOT NULL REFERENCES wiki_articles(id) ON DELETE CASCADE,
-                target_tag_name TEXT NOT NULL COLLATE NOCASE,
-                target_tag_id TEXT REFERENCES tags(id) ON DELETE SET NULL,
-                created_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_wiki_links_source ON wiki_links(source_article_id);
-            CREATE INDEX IF NOT EXISTS idx_wiki_links_target_tag ON wiki_links(target_tag_id);
-
-            -- Tag-level centroid embeddings (average of atom chunk embeddings)
-            CREATE TABLE IF NOT EXISTS tag_embeddings (
-                tag_id TEXT PRIMARY KEY REFERENCES tags(id) ON DELETE CASCADE,
-                embedding BLOB NOT NULL,
-                atom_count INTEGER NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            "#,
-        )?;
-
-        // Migrate: add atom_count column to tags if missing (existing DBs)
-        let has_atom_count: bool = conn
-            .query_row(
-                "SELECT 1 FROM pragma_table_info('tags') WHERE name='atom_count'",
-                [],
-                |_| Ok(true),
-            )
-            .unwrap_or(false);
-
-        if !has_atom_count {
+        // --- V0 → V1: Baseline schema (tables + indexes) ---
+        if version < 1 {
             conn.execute_batch(
-                "ALTER TABLE tags ADD COLUMN atom_count INTEGER NOT NULL DEFAULT 0;
-                 UPDATE tags SET atom_count = (
-                     SELECT COUNT(*) FROM atom_tags WHERE tag_id = tags.id
-                 );",
+                r#"
+                CREATE TABLE IF NOT EXISTS atoms (
+                    id TEXT PRIMARY KEY,
+                    content TEXT NOT NULL,
+                    source_url TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    embedding_status TEXT DEFAULT 'pending',
+                    tagging_status TEXT DEFAULT 'pending'
+                );
+
+                CREATE TABLE IF NOT EXISTS tags (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL COLLATE NOCASE,
+                    parent_id TEXT REFERENCES tags(id) ON DELETE SET NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(name COLLATE NOCASE)
+                );
+
+                CREATE TABLE IF NOT EXISTS atom_tags (
+                    atom_id TEXT REFERENCES atoms(id) ON DELETE CASCADE,
+                    tag_id TEXT REFERENCES tags(id) ON DELETE CASCADE,
+                    PRIMARY KEY (atom_id, tag_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS atom_chunks (
+                    id TEXT PRIMARY KEY,
+                    atom_id TEXT REFERENCES atoms(id) ON DELETE CASCADE,
+                    chunk_index INTEGER NOT NULL,
+                    content TEXT NOT NULL,
+                    embedding BLOB
+                );
+
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS wiki_articles (
+                    id TEXT PRIMARY KEY,
+                    tag_id TEXT UNIQUE REFERENCES tags(id) ON DELETE CASCADE,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    atom_count INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS wiki_citations (
+                    id TEXT PRIMARY KEY,
+                    wiki_article_id TEXT REFERENCES wiki_articles(id) ON DELETE CASCADE,
+                    citation_index INTEGER NOT NULL,
+                    atom_id TEXT REFERENCES atoms(id) ON DELETE CASCADE,
+                    chunk_index INTEGER,
+                    excerpt TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS atom_positions (
+                    atom_id TEXT PRIMARY KEY REFERENCES atoms(id) ON DELETE CASCADE,
+                    x REAL NOT NULL,
+                    y REAL NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS semantic_edges (
+                    id TEXT PRIMARY KEY,
+                    source_atom_id TEXT NOT NULL REFERENCES atoms(id) ON DELETE CASCADE,
+                    target_atom_id TEXT NOT NULL REFERENCES atoms(id) ON DELETE CASCADE,
+                    similarity_score REAL NOT NULL,
+                    source_chunk_index INTEGER,
+                    target_chunk_index INTEGER,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(source_atom_id, target_atom_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS atom_clusters (
+                    atom_id TEXT PRIMARY KEY REFERENCES atoms(id) ON DELETE CASCADE,
+                    cluster_id INTEGER NOT NULL,
+                    computed_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS conversations (
+                    id TEXT PRIMARY KEY,
+                    title TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    is_archived INTEGER DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS conversation_tags (
+                    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                    tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+                    PRIMARY KEY (conversation_id, tag_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    message_index INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS chat_tool_calls (
+                    id TEXT PRIMARY KEY,
+                    message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+                    tool_name TEXT NOT NULL,
+                    tool_input TEXT NOT NULL,
+                    tool_output TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TEXT NOT NULL,
+                    completed_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS chat_citations (
+                    id TEXT PRIMARY KEY,
+                    message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+                    citation_index INTEGER NOT NULL,
+                    atom_id TEXT NOT NULL REFERENCES atoms(id) ON DELETE CASCADE,
+                    chunk_index INTEGER,
+                    excerpt TEXT NOT NULL,
+                    relevance_score REAL
+                );
+
+                CREATE TABLE IF NOT EXISTS api_tokens (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    token_hash TEXT NOT NULL,
+                    token_prefix TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    last_used_at TEXT,
+                    is_revoked INTEGER DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS oauth_clients (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT UNIQUE NOT NULL,
+                    client_secret_hash TEXT NOT NULL,
+                    client_name TEXT NOT NULL,
+                    redirect_uris TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS oauth_codes (
+                    code_hash TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    code_challenge TEXT NOT NULL,
+                    code_challenge_method TEXT NOT NULL DEFAULT 'S256',
+                    redirect_uri TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    used INTEGER NOT NULL DEFAULT 0,
+                    token_id TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS wiki_links (
+                    id TEXT PRIMARY KEY,
+                    source_article_id TEXT NOT NULL REFERENCES wiki_articles(id) ON DELETE CASCADE,
+                    target_tag_name TEXT NOT NULL COLLATE NOCASE,
+                    target_tag_id TEXT REFERENCES tags(id) ON DELETE SET NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS tag_embeddings (
+                    tag_id TEXT PRIMARY KEY REFERENCES tags(id) ON DELETE CASCADE,
+                    embedding BLOB NOT NULL,
+                    atom_count INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_atoms_updated_id ON atoms(updated_at DESC, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_atoms_embedding_status ON atoms(embedding_status);
+                CREATE INDEX IF NOT EXISTS idx_atoms_tagging_status ON atoms(tagging_status);
+                CREATE INDEX IF NOT EXISTS idx_atom_tags_tag_atom ON atom_tags(tag_id, atom_id);
+                CREATE INDEX IF NOT EXISTS idx_atom_chunks_atom_id ON atom_chunks(atom_id);
+                CREATE INDEX IF NOT EXISTS idx_semantic_edges_source ON semantic_edges(source_atom_id);
+                CREATE INDEX IF NOT EXISTS idx_semantic_edges_target ON semantic_edges(target_atom_id);
+                CREATE INDEX IF NOT EXISTS idx_semantic_edges_similarity ON semantic_edges(similarity_score DESC);
+                CREATE INDEX IF NOT EXISTS idx_tags_parent_id ON tags(parent_id);
+                CREATE INDEX IF NOT EXISTS idx_wiki_citations_article ON wiki_citations(wiki_article_id);
+                CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_conversation_tags_conv ON conversation_tags(conversation_id);
+                CREATE INDEX IF NOT EXISTS idx_conversation_tags_tag ON conversation_tags(tag_id);
+                CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages(conversation_id, message_index);
+                CREATE INDEX IF NOT EXISTS idx_chat_tool_calls_message ON chat_tool_calls(message_id);
+                CREATE INDEX IF NOT EXISTS idx_chat_citations_message ON chat_citations(message_id);
+                CREATE INDEX IF NOT EXISTS idx_chat_citations_atom ON chat_citations(atom_id);
+                CREATE INDEX IF NOT EXISTS idx_api_tokens_hash ON api_tokens(token_hash);
+                CREATE INDEX IF NOT EXISTS idx_wiki_links_source ON wiki_links(source_article_id);
+                CREATE INDEX IF NOT EXISTS idx_wiki_links_target_tag ON wiki_links(target_tag_id);
+
+                DROP INDEX IF EXISTS idx_atoms_updated_at;
+                DROP INDEX IF EXISTS idx_atom_tags_atom_id;
+
+                PRAGMA user_version = 1;
+                "#,
             )?;
         }
 
-        // Index on atom_count — must be after the ALTER TABLE migration above
-        conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_tags_parent_count ON tags(parent_id, atom_count DESC);",
-        )?;
+        // --- V1 → V2: Denormalize atom_count onto tags ---
+        if version < 2 {
+            let has_col: bool = conn
+                .query_row(
+                    "SELECT 1 FROM pragma_table_info('tags') WHERE name='atom_count'",
+                    [],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
 
-        // Triggers to keep tags.atom_count in sync with atom_tags mutations.
-        // DROP IF EXISTS + recreate ensures triggers stay current across upgrades.
+            if !has_col {
+                conn.execute_batch(
+                    "ALTER TABLE tags ADD COLUMN atom_count INTEGER NOT NULL DEFAULT 0;",
+                )?;
+            }
+
+            conn.execute_batch(
+                "UPDATE tags SET atom_count = (
+                     SELECT COUNT(*) FROM atom_tags WHERE tag_id = tags.id
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_tags_parent_count ON tags(parent_id, atom_count DESC);
+                 PRAGMA user_version = 2;",
+            )?;
+        }
+
+        // --- Triggers (recreated every startup to stay current) ---
         conn.execute_batch(
             "DROP TRIGGER IF EXISTS atom_tags_insert_count;
              DROP TRIGGER IF EXISTS atom_tags_delete_count;
@@ -419,7 +448,8 @@ impl Database {
              END;",
         )?;
 
-        // Create vec_chunks virtual table if it doesn't exist
+        // --- Virtual tables (idempotent checks, recreated if wrong) ---
+
         let has_vec_chunks: bool = conn
             .query_row(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='vec_chunks'",
@@ -429,15 +459,13 @@ impl Database {
             .unwrap_or(false);
 
         if !has_vec_chunks {
-            // Default to 1536 dimensions (OpenAI text-embedding-3-small)
             conn.execute(
                 "CREATE VIRTUAL TABLE vec_chunks USING vec0(chunk_id TEXT PRIMARY KEY, embedding float[1536])",
                 [],
             )?;
         }
 
-        // Create vec_tags virtual table for tag centroid similarity search.
-        // Must match vec_chunks dimension — extract it from vec_chunks CREATE statement.
+        // vec_tags must match vec_chunks dimension
         let vec_chunks_dim: usize = conn
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_chunks'",
@@ -446,7 +474,6 @@ impl Database {
             )
             .ok()
             .and_then(|sql| {
-                // Parse "float[N]" from the CREATE statement
                 let start = sql.find("float[")?;
                 let after = &sql[start + 6..];
                 let end = after.find(']')?;
@@ -454,7 +481,6 @@ impl Database {
             })
             .unwrap_or(1536);
 
-        // Check if vec_tags exists and has the right dimension
         let vec_tags_sql: String = conn
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_tags'",
@@ -463,29 +489,21 @@ impl Database {
             )
             .unwrap_or_default();
 
-        let vec_tags_correct = !vec_tags_sql.is_empty()
-            && vec_tags_sql.contains(&format!("float[{}]", vec_chunks_dim));
-
-        if !vec_tags_correct {
+        if vec_tags_sql.is_empty()
+            || !vec_tags_sql.contains(&format!("float[{}]", vec_chunks_dim))
+        {
             conn.execute("DROP TABLE IF EXISTS vec_tags", []).ok();
             conn.execute("DELETE FROM tag_embeddings", []).ok();
-            let create_sql = format!(
-                "CREATE VIRTUAL TABLE vec_tags USING vec0(tag_id TEXT PRIMARY KEY, embedding float[{}])",
-                vec_chunks_dim
-            );
-            conn.execute(&create_sql, [])?;
+            conn.execute(
+                &format!(
+                    "CREATE VIRTUAL TABLE vec_tags USING vec0(tag_id TEXT PRIMARY KEY, embedding float[{}])",
+                    vec_chunks_dim
+                ),
+                [],
+            )?;
         }
 
-        // FTS5 table for keyword search (external content backed by atom_chunks).
-        // Column names MUST match atom_chunks columns (FTS5 uses names during rebuild).
-        // Positional mapping to atom_chunks for external content reads:
-        //   FTS5 col 0 (id)          -> atom_chunks col 0 (id)
-        //   FTS5 col 1 (atom_id)     -> atom_chunks col 1 (atom_id)
-        //   FTS5 col 2 (chunk_index) -> atom_chunks col 2 (chunk_index)
-        //   FTS5 col 3 (content)     -> atom_chunks col 3 (content)
-        //
-        // Correct schema requires: content='atom_chunks' AND all 4 column names.
-        // Recreate if missing, standalone, or has wrong column names.
+        // FTS5 for keyword search (external content backed by atom_chunks)
         let fts_sql: String = conn
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name='atom_chunks_fts'",
@@ -512,14 +530,12 @@ impl Database {
                 );
                 "#,
             )?;
-            // Rebuild FTS index from existing atom_chunks data
             conn.execute(
                 "INSERT INTO atom_chunks_fts(atom_chunks_fts) VALUES('rebuild')",
                 [],
             )?;
         }
 
-        // Migrate settings
         crate::settings::migrate_settings(conn)?;
 
         Ok(())

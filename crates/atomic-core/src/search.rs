@@ -157,7 +157,7 @@ pub async fn search_atoms(
     deduped.truncate(options.limit as usize);
 
     // Batch fetch all atom data in one query
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let conn = db.read_conn().map_err(|e| e.to_string())?;
 
     let atom_ids: Vec<String> = deduped.iter().map(|c| c.atom_id.clone()).collect();
     let atom_map = batch_fetch_atoms(&conn, &atom_ids)?;
@@ -278,7 +278,7 @@ async fn search_keyword_chunks(
     db: &Database,
     options: &SearchOptions,
 ) -> Result<Vec<ChunkResult>, String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let conn = db.read_conn().map_err(|e| e.to_string())?;
 
     let mut fts_stmt = conn
         .prepare(
@@ -330,7 +330,7 @@ async fn search_semantic_chunks(
 ) -> Result<Vec<ChunkResult>, String> {
     // Get provider config from settings
     let provider_config = {
-        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        let conn = db.read_conn().map_err(|e| e.to_string())?;
         let settings_map = get_all_settings(&conn).map_err(|e| e.to_string())?;
         ProviderConfig::from_settings(&settings_map)
     };
@@ -347,7 +347,7 @@ async fn search_semantic_chunks(
     let query_blob = f32_vec_to_blob_public(&embeddings[0]);
 
     // Query vec_chunks
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let conn = db.read_conn().map_err(|e| e.to_string())?;
     let fetch_limit = options.limit * 10;
 
     let mut vec_stmt = conn
@@ -410,9 +410,14 @@ async fn search_hybrid_chunks(
     db: &Database,
     options: &SearchOptions,
 ) -> Result<Vec<ChunkResult>, String> {
-    // Run keyword and semantic searches using the existing implementations
-    let keyword_results = search_keyword_chunks(db, options).await?;
-    let semantic_results = search_semantic_chunks(db, options).await?;
+    // Run keyword and semantic searches in parallel — keyword is pure DB,
+    // semantic includes an embedding API call, so overlapping saves significant time.
+    let (keyword_results, semantic_results) = tokio::join!(
+        search_keyword_chunks(db, options),
+        search_semantic_chunks(db, options),
+    );
+    let keyword_results = keyword_results?;
+    let semantic_results = semantic_results?;
 
     // Combine with Reciprocal Rank Fusion
     // RRF score = sum of 1/(k + rank) across result sets
