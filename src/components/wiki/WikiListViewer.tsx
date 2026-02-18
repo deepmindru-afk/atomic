@@ -15,7 +15,6 @@ export function WikiListViewer() {
   const articleStatus = useWikiStore(s => s.articleStatus);
   const relatedTags = useWikiStore(s => s.relatedTags);
   const wikiLinks = useWikiStore(s => s.wikiLinks);
-  const articles = useWikiStore(s => s.articles);
   const isLoading = useWikiStore(s => s.isLoading);
   const isGenerating = useWikiStore(s => s.isGenerating);
   const isUpdating = useWikiStore(s => s.isUpdating);
@@ -268,7 +267,6 @@ export function WikiListViewer() {
           citations={currentArticle.citations}
           wikiLinks={wikiLinks}
           relatedTags={relatedTags}
-          allArticles={articles}
           onViewAtom={handleViewAtom}
           onNavigateToArticle={(tagId, tagName) => openArticle(tagId, tagName)}
         />

@@ -93,7 +93,7 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
   },
   delete_tag: {
     method: 'DELETE',
-    path: (a) => `/api/tags/${encodeURIComponent(a.id as string)}`,
+    path: (a) => `/api/tags/${encodeURIComponent(a.id as string)}${a.recursive ? '?recursive=true' : ''}`,
   },
 
   // ==================== Search ====================

@@ -200,7 +200,6 @@ export function WikiViewer({ tagId, tagName }: WikiViewerProps) {
           citations={currentArticle.citations}
           wikiLinks={wikiLinks}
           relatedTags={relatedTags}
-          allArticles={articles}
           onViewAtom={handleViewAtom}
           onNavigateToArticle={handleNavigateToArticle}
         />

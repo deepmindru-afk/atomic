@@ -2,7 +2,9 @@
 //!
 //! This module handles generating and updating wiki articles for tags.
 
+use crate::chunking::count_tokens;
 use crate::db::Database;
+use crate::embedding::distance_to_similarity;
 use crate::models::{
     ChunkWithContext, RelatedTag, SuggestedArticle, WikiArticle, WikiArticleSummary,
     WikiArticleStatus, WikiArticleWithCitations, WikiCitation, WikiLink,
@@ -68,8 +70,16 @@ pub struct WikiUpdateInput {
     pub tag_id: String,
 }
 
-/// Prepare data for wiki article generation
-/// Fetches ALL chunks for atoms under the tag hierarchy so the article covers everything
+/// Maximum source material tokens for wiki generation.
+/// Leaves room for system prompt, article output, and structured output framing.
+/// Most wiki models have 128K context; we budget ~80K for source material.
+const MAX_WIKI_SOURCE_TOKENS: usize = 80_000;
+
+/// Prepare data for wiki article generation.
+///
+/// Uses the tag's centroid embedding to rank all chunks under the tag hierarchy
+/// by semantic relevance, then selects the top chunks that fit within the token budget.
+/// Falls back to a simple SQL fetch (ordered by atom/chunk index) if no centroid exists.
 pub async fn prepare_wiki_generation(
     db: &Database,
     _provider_config: &ProviderConfig,
@@ -85,33 +95,41 @@ pub async fn prepare_wiki_generation(
         return Err("No content found for this tag".to_string());
     }
 
+    // Build the set of atom IDs under this tag hierarchy (for filtering vec_chunks results)
     let placeholders = all_tag_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-
-    // Fetch all chunks for atoms under this tag hierarchy
-    let query = format!(
-        "SELECT ac.atom_id, ac.chunk_index, ac.content
-         FROM atom_chunks ac
-         INNER JOIN atom_tags at ON ac.atom_id = at.atom_id
-         WHERE at.tag_id IN ({})
-         ORDER BY ac.atom_id, ac.chunk_index",
+    let atom_ids_query = format!(
+        "SELECT DISTINCT atom_id FROM atom_tags WHERE tag_id IN ({})",
         placeholders
     );
+    let mut stmt = conn.prepare(&atom_ids_query)
+        .map_err(|e| format!("Failed to prepare atom_ids query: {}", e))?;
+    let scoped_atom_ids: std::collections::HashSet<String> = stmt
+        .query_map(rusqlite::params_from_iter(all_tag_ids.iter()), |row| row.get(0))
+        .map_err(|e| format!("Failed to query atom_ids: {}", e))?
+        .collect::<Result<std::collections::HashSet<_>, _>>()
+        .map_err(|e| format!("Failed to collect atom_ids: {}", e))?;
 
-    let mut stmt = conn.prepare(&query)
-        .map_err(|e| format!("Failed to prepare chunks query: {}", e))?;
+    if scoped_atom_ids.is_empty() {
+        return Err("No content found for this tag".to_string());
+    }
 
-    let chunks: Vec<ChunkWithContext> = stmt
-        .query_map(rusqlite::params_from_iter(all_tag_ids.iter()), |row| {
-            Ok(ChunkWithContext {
-                atom_id: row.get(0)?,
-                chunk_index: row.get(1)?,
-                content: row.get(2)?,
-                similarity_score: 1.0,
-            })
-        })
-        .map_err(|e| format!("Failed to query chunks: {}", e))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Failed to collect chunks: {}", e))?;
+    // Try to load the tag's centroid embedding for ranked retrieval
+    let centroid_blob: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT embedding FROM tag_embeddings WHERE tag_id = ?1",
+            [tag_id],
+            |row| row.get(0),
+        )
+        .ok();
+
+    let chunks = if let Some(ref centroid) = centroid_blob {
+        // Ranked path: query vec_chunks with centroid, filter to scoped atoms, fill token budget
+        select_chunks_by_centroid(&conn, centroid, &scoped_atom_ids)?
+    } else {
+        // Fallback: no centroid yet (e.g. embeddings haven't run), fetch by insertion order
+        eprintln!("[wiki] No centroid for tag {}, falling back to unranked chunk selection", tag_id);
+        select_chunks_unranked(&conn, &placeholders, &all_tag_ids)?
+    };
 
     if chunks.is_empty() {
         return Err("No content found for this tag".to_string());
@@ -125,6 +143,142 @@ pub async fn prepare_wiki_generation(
         tag_id: tag_id.to_string(),
         tag_name: tag_name.to_string(),
     })
+}
+
+/// Select chunks ranked by similarity to the tag centroid, up to the token budget.
+fn select_chunks_by_centroid(
+    conn: &Connection,
+    centroid_blob: &[u8],
+    scoped_atom_ids: &std::collections::HashSet<String>,
+) -> Result<Vec<ChunkWithContext>, String> {
+    // Fetch more than we need from vec_chunks since we'll filter by scope.
+    // Over-fetch by 3x to account for chunks outside the tag hierarchy.
+    let fetch_limit = 3000_i32;
+
+    let mut vec_stmt = conn.prepare(
+        "SELECT chunk_id, distance
+         FROM vec_chunks
+         WHERE embedding MATCH ?1
+         ORDER BY distance
+         LIMIT ?2",
+    ).map_err(|e| format!("Failed to prepare vec_chunks query: {}", e))?;
+
+    let candidates: Vec<(String, f32)> = vec_stmt
+        .query_map(rusqlite::params![centroid_blob, fetch_limit], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .map_err(|e| format!("Failed to query vec_chunks: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to collect vec_chunks: {}", e))?;
+
+    // Batch-load chunk details for all candidates
+    let chunk_ids: Vec<&str> = candidates.iter().map(|(id, _)| id.as_str()).collect();
+    let chunk_details = batch_fetch_chunk_details(conn, &chunk_ids)?;
+
+    // Filter to scoped atoms and fill token budget
+    let mut chunks = Vec::new();
+    let mut total_tokens = 0;
+
+    for (chunk_id, distance) in &candidates {
+        if let Some((atom_id, chunk_index, content)) = chunk_details.get(chunk_id.as_str()) {
+            if !scoped_atom_ids.contains(atom_id) {
+                continue;
+            }
+            let tokens = count_tokens(content);
+            if total_tokens + tokens > MAX_WIKI_SOURCE_TOKENS && !chunks.is_empty() {
+                break;
+            }
+            total_tokens += tokens;
+            chunks.push(ChunkWithContext {
+                atom_id: atom_id.clone(),
+                chunk_index: *chunk_index,
+                content: content.clone(),
+                similarity_score: distance_to_similarity(*distance),
+            });
+        }
+    }
+
+    eprintln!(
+        "[wiki] Selected {} chunks ({} tokens) by centroid similarity",
+        chunks.len(), total_tokens
+    );
+
+    Ok(chunks)
+}
+
+/// Batch-fetch chunk details (atom_id, chunk_index, content) by chunk IDs.
+fn batch_fetch_chunk_details(
+    conn: &Connection,
+    chunk_ids: &[&str],
+) -> Result<std::collections::HashMap<String, (String, i32, String)>, String> {
+    let mut map = std::collections::HashMap::new();
+    // Batch in groups of 500 to stay under SQLite parameter limit
+    for batch in chunk_ids.chunks(500) {
+        let placeholders = batch.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let query = format!(
+            "SELECT id, atom_id, chunk_index, content FROM atom_chunks WHERE id IN ({})",
+            placeholders
+        );
+        let mut stmt = conn.prepare(&query)
+            .map_err(|e| format!("Failed to prepare chunk details query: {}", e))?;
+        let mut rows = stmt.query(rusqlite::params_from_iter(batch.iter()))
+            .map_err(|e| format!("Failed to query chunk details: {}", e))?;
+        while let Some(row) = rows.next().map_err(|e| format!("Failed to read row: {}", e))? {
+            let id: String = row.get(0).map_err(|e| format!("Failed to get id: {}", e))?;
+            let atom_id: String = row.get(1).map_err(|e| format!("Failed to get atom_id: {}", e))?;
+            let chunk_index: i32 = row.get(2).map_err(|e| format!("Failed to get chunk_index: {}", e))?;
+            let content: String = row.get(3).map_err(|e| format!("Failed to get content: {}", e))?;
+            map.insert(id, (atom_id, chunk_index, content));
+        }
+    }
+    Ok(map)
+}
+
+/// Fallback: select chunks by insertion order up to the token budget.
+fn select_chunks_unranked(
+    conn: &Connection,
+    placeholders: &str,
+    all_tag_ids: &[String],
+) -> Result<Vec<ChunkWithContext>, String> {
+    let query = format!(
+        "SELECT DISTINCT ac.atom_id, ac.chunk_index, ac.content
+         FROM atom_chunks ac
+         INNER JOIN atom_tags at ON ac.atom_id = at.atom_id
+         WHERE at.tag_id IN ({})
+         ORDER BY ac.atom_id, ac.chunk_index",
+        placeholders
+    );
+
+    let mut stmt = conn.prepare(&query)
+        .map_err(|e| format!("Failed to prepare chunks query: {}", e))?;
+
+    let mut rows = stmt.query(rusqlite::params_from_iter(all_tag_ids.iter()))
+        .map_err(|e| format!("Failed to query chunks: {}", e))?;
+
+    let mut chunks = Vec::new();
+    let mut total_tokens = 0;
+
+    while let Some(row) = rows.next().map_err(|e| format!("Failed to read row: {}", e))? {
+        let content: String = row.get(2).map_err(|e| format!("Failed to get content: {}", e))?;
+        let tokens = count_tokens(&content);
+        if total_tokens + tokens > MAX_WIKI_SOURCE_TOKENS && !chunks.is_empty() {
+            break;
+        }
+        total_tokens += tokens;
+        chunks.push(ChunkWithContext {
+            atom_id: row.get(0).map_err(|e| format!("Failed to get atom_id: {}", e))?,
+            chunk_index: row.get(1).map_err(|e| format!("Failed to get chunk_index: {}", e))?,
+            content,
+            similarity_score: 1.0,
+        });
+    }
+
+    eprintln!(
+        "[wiki] Selected {} chunks ({} tokens) by insertion order (no centroid)",
+        chunks.len(), total_tokens
+    );
+
+    Ok(chunks)
 }
 
 /// Get all tag IDs in hierarchy (tag + all descendants) using recursive CTE
@@ -440,7 +594,6 @@ async fn call_llm_for_wiki(
     let llm_config = LlmConfig::new(model).with_params(
         GenerationParams::new()
             .with_temperature(0.3)
-            .with_max_tokens(4000)
             .with_structured_output(StructuredOutputSchema::new(
                 "wiki_generation_result",
                 schema,
@@ -770,24 +923,7 @@ pub fn load_all_wiki_articles(conn: &Connection) -> Result<Vec<WikiArticleSummar
     Ok(articles)
 }
 
-/// Get all tags that have wiki articles (for cross-linking during generation)
-pub fn get_existing_article_names(conn: &Connection) -> Result<Vec<(String, String)>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT w.tag_id, t.name FROM wiki_articles w JOIN tags t ON w.tag_id = t.id",
-        )
-        .map_err(|e| format!("Failed to prepare article names query: {}", e))?;
-
-    let names: Vec<(String, String)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-        .map_err(|e| format!("Failed to query article names: {}", e))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Failed to collect article names: {}", e))?;
-
-    Ok(names)
-}
-
-/// Extract [[wiki links]] from article content and map to known tags
+/// Extract [[wiki links]] from article content and resolve to known tags
 pub fn extract_wiki_links(
     article_id: &str,
     content: &str,
@@ -806,32 +942,23 @@ pub fn extract_wiki_links(
             let link_name = name_match.as_str().trim().to_string();
             let lower_name = link_name.to_lowercase();
 
-            // Deduplicate
             if seen_names.contains(&lower_name) {
                 continue;
             }
             seen_names.insert(lower_name.clone());
 
             // Try to resolve to a known tag (case-insensitive)
-            let resolved = known_tags
+            let target_tag_id = known_tags
                 .iter()
-                .find(|(_, name)| name.to_lowercase() == lower_name);
-
-            let (target_tag_id, has_article) = match resolved {
-                Some((tag_id, _)) => (Some(tag_id.clone()), true),
-                None => {
-                    // Check if there's a tag with this name but no article
-                    // We'll just store None for target_tag_id in this case
-                    (None, false)
-                }
-            };
+                .find(|(_, name)| name.to_lowercase() == lower_name)
+                .map(|(tag_id, _)| tag_id.clone());
 
             links.push(WikiLink {
                 id: Uuid::new_v4().to_string(),
                 source_article_id: article_id.to_string(),
                 target_tag_name: link_name,
                 target_tag_id,
-                has_article,
+                has_article: false, // resolved dynamically at read time
             });
         }
     }
@@ -884,8 +1011,6 @@ pub fn get_related_tags(
     tag_id: &str,
     limit: usize,
 ) -> Result<Vec<RelatedTag>, String> {
-    use crate::embedding::distance_to_similarity;
-
     // Get all atom IDs in this tag's hierarchy
     let source_tag_ids = get_tag_hierarchy(conn, tag_id)?;
     if source_tag_ids.is_empty() {

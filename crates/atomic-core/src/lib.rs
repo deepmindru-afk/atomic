@@ -115,6 +115,48 @@ impl AtomicCore {
             }
         }
 
+        // Backfill tag centroid embeddings if the table exists but is empty
+        // (i.e. an existing DB just got the new schema for the first time)
+        {
+            let conn = db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+            let has_embeddings: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM atom_chunks WHERE embedding IS NOT NULL)",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false);
+            let has_centroids: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM tag_embeddings)",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false);
+
+            if has_embeddings && !has_centroids {
+                let mut stmt = conn.prepare(
+                    "SELECT DISTINCT at.tag_id
+                     FROM atom_tags at
+                     INNER JOIN atom_chunks ac ON at.atom_id = ac.atom_id
+                     WHERE ac.embedding IS NOT NULL",
+                ).map_err(|e| AtomicCoreError::Database(e))?;
+
+                let tag_ids: Vec<String> = stmt
+                    .query_map([], |row| row.get(0))
+                    .map_err(|e| AtomicCoreError::Database(e))?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| AtomicCoreError::Database(e))?;
+
+                if !tag_ids.is_empty() {
+                    eprintln!("Backfilling tag centroid embeddings for {} tags...", tag_ids.len());
+                    embedding::compute_tag_embeddings_batch(&conn, &tag_ids)
+                        .map_err(|e| AtomicCoreError::Embedding(e))?;
+                    eprintln!("Tag centroid backfill complete.");
+                }
+            }
+        }
+
         Ok(Self { db: Arc::new(db) })
     }
 
@@ -788,11 +830,23 @@ impl AtomicCore {
     }
 
     /// Delete a tag
-    pub fn delete_tag(&self, id: &str) -> Result<(), AtomicCoreError> {
+    pub fn delete_tag(&self, id: &str, recursive: bool) -> Result<(), AtomicCoreError> {
         let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
 
-        conn.execute("DELETE FROM tags WHERE id = ?1", [id])
-            ?;
+        if recursive {
+            // Delete tag and all descendants via recursive CTE
+            conn.execute(
+                "WITH RECURSIVE descendants(id) AS (
+                    SELECT id FROM tags WHERE id = ?1
+                    UNION ALL
+                    SELECT t.id FROM tags t JOIN descendants d ON t.parent_id = d.id
+                )
+                DELETE FROM tags WHERE id IN (SELECT id FROM descendants)",
+                [id],
+            )?;
+        } else {
+            conn.execute("DELETE FROM tags WHERE id = ?1", [id])?;
+        }
 
         Ok(())
     }
@@ -831,8 +885,9 @@ impl AtomicCore {
     ) -> Result<WikiArticleWithCitations, AtomicCoreError> {
         eprintln!("[wiki] === Generating article for '{}' (tag_id={}) ===", tag_name, tag_id);
 
-        // Get settings for provider config and existing article names for cross-linking
-        let (provider_config, wiki_model, existing_article_names) = {
+        // Get settings and related tags with existing articles for cross-linking
+        const MAX_CROSS_LINK_TAGS: usize = 50;
+        let (provider_config, wiki_model, linkable_article_names) = {
             let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
             let settings_map = settings::get_all_settings(&conn)?;
             let config = ProviderConfig::from_settings(&settings_map);
@@ -840,14 +895,19 @@ impl AtomicCore {
                 .get("wiki_model")
                 .cloned()
                 .unwrap_or_else(|| "anthropic/claude-sonnet-4.5".to_string());
-            let article_names = wiki::get_existing_article_names(&conn)
-                .map_err(|e| AtomicCoreError::Wiki(e))?;
-            eprintln!("[wiki] Model: {}, existing articles for cross-linking: {}", model, article_names.len());
+            let related = wiki::get_related_tags(&conn, tag_id, MAX_CROSS_LINK_TAGS)
+                .unwrap_or_default();
+            let article_names: Vec<(String, String)> = related
+                .into_iter()
+                .filter(|t| t.has_article)
+                .map(|t| (t.tag_id, t.tag_name))
+                .collect();
+            eprintln!("[wiki] Model: {}, related articles for cross-linking: {}", model, article_names.len());
             (config, model, article_names)
         };
 
-        // Prepare sources using async function
-        eprintln!("[wiki] Preparing sources (hybrid search)...");
+        // Prepare sources using centroid similarity
+        eprintln!("[wiki] Preparing sources (centroid similarity)...");
         let input = wiki::prepare_wiki_generation(&self.db, &provider_config, tag_id, tag_name)
             .await
             .map_err(|e| AtomicCoreError::Wiki(e))?;
@@ -859,7 +919,7 @@ impl AtomicCore {
             &provider_config,
             &input,
             &wiki_model,
-            &existing_article_names,
+            &linkable_article_names,
         )
         .await
         .map_err(|e| AtomicCoreError::Wiki(e))?;
@@ -868,7 +928,7 @@ impl AtomicCore {
         let wiki_links = wiki::extract_wiki_links(
             &result.article.id,
             &result.article.content,
-            &existing_article_names,
+            &linkable_article_names,
         );
         eprintln!("[wiki] Extracted {} wiki links, {} citations", wiki_links.len(), result.citations.len());
 
@@ -2631,7 +2691,7 @@ mod tests {
         assert!(tags_before.iter().any(|t| t.tag.id == tag_id));
 
         // Delete it
-        db.delete_tag(&tag_id).unwrap();
+        db.delete_tag(&tag_id, false).unwrap();
 
         // Verify it's gone
         let tags_after = db.get_all_tags().unwrap();

@@ -29,7 +29,7 @@ interface TagsStore {
   fetchTagChildren: (parentId: string) => Promise<void>;
   createTag: (name: string, parentId?: string) => Promise<Tag>;
   updateTag: (id: string, name: string, parentId?: string) => Promise<Tag>;
-  deleteTag: (id: string) => Promise<void>;
+  deleteTag: (id: string, recursive?: boolean) => Promise<void>;
   compactTags: () => Promise<CompactionResult>;
   clearError: () => void;
 }
@@ -115,10 +115,10 @@ export const useTagsStore = create<TagsStore>((set) => ({
     }
   },
 
-  deleteTag: async (id: string) => {
+  deleteTag: async (id: string, recursive?: boolean) => {
     set({ error: null });
     try {
-      await getTransport().invoke('delete_tag', { id });
+      await getTransport().invoke('delete_tag', { id, recursive: recursive ?? false });
       // Refetch tags to get updated tree structure
       const tags = await getTransport().invoke<TagWithCount[]>('get_all_tags');
       set({ tags });

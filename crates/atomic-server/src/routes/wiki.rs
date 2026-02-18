@@ -55,8 +55,9 @@ pub async fn update_wiki(
 ) -> HttpResponse {
     let tag_id = path.into_inner();
 
+    const MAX_CROSS_LINK_TAGS: usize = 50;
     let db = state.core.database();
-    let (provider_config, wiki_model, existing, update_input, existing_article_names) = {
+    let (provider_config, wiki_model, existing, update_input, linkable_article_names) = {
         let conn = match db.conn.lock() {
             Ok(c) => c,
             Err(e) => {
@@ -103,13 +104,13 @@ pub async fn update_wiki(
         } else {
             None
         };
-        let article_names = match atomic_core::wiki::get_existing_article_names(&conn) {
-            Ok(n) => n,
-            Err(e) => {
-                return HttpResponse::InternalServerError()
-                    .json(serde_json::json!({"error": e}));
-            }
-        };
+        let related = atomic_core::wiki::get_related_tags(&conn, &tag_id, MAX_CROSS_LINK_TAGS)
+            .unwrap_or_default();
+        let article_names: Vec<(String, String)> = related
+            .into_iter()
+            .filter(|t| t.has_article)
+            .map(|t| (t.tag_id, t.tag_name))
+            .collect();
         (provider_config, wiki_model, existing, update_input, article_names)
     };
 
@@ -126,12 +127,12 @@ pub async fn update_wiki(
         None => return HttpResponse::Ok().json(existing),
     };
 
-    match atomic_core::wiki::update_wiki_content(&provider_config, &input, &wiki_model, &existing_article_names).await {
+    match atomic_core::wiki::update_wiki_content(&provider_config, &input, &wiki_model, &linkable_article_names).await {
         Ok(result) => {
             let wiki_links = atomic_core::wiki::extract_wiki_links(
                 &result.article.id,
                 &result.article.content,
-                &existing_article_names,
+                &linkable_article_names,
             );
             let conn = match db.conn.lock() {
                 Ok(c) => c,

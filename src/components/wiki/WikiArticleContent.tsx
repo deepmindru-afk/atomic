@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback, useMemo, Fragment, ReactNode } from 'react';
+import { useState, useEffect, useCallback, Fragment, ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { WikiArticle, WikiArticleSummary, WikiCitation, WikiLink, RelatedTag, useWikiStore } from '../../stores/wiki';
+import { WikiArticle, WikiCitation, WikiLink, RelatedTag, useWikiStore } from '../../stores/wiki';
 import { CitationLink } from './CitationLink';
 import { CitationPopover } from './CitationPopover';
 import { WikiLinkInline } from './WikiLinkInline';
@@ -14,12 +14,11 @@ interface WikiArticleContentProps {
   citations: WikiCitation[];
   wikiLinks: WikiLink[];
   relatedTags: RelatedTag[];
-  allArticles: WikiArticleSummary[];
   onViewAtom: (atomId: string) => void;
   onNavigateToArticle: (tagId: string, tagName: string) => void;
 }
 
-export function WikiArticleContent({ article, citations, wikiLinks, relatedTags, allArticles, onViewAtom, onNavigateToArticle }: WikiArticleContentProps) {
+export function WikiArticleContent({ article, citations, wikiLinks, relatedTags, onViewAtom, onNavigateToArticle }: WikiArticleContentProps) {
   const [activeCitation, setActiveCitation] = useState<WikiCitation | null>(null);
   const [anchorRect, setAnchorRect] = useState<{ top: number; left: number; bottom: number; width: number } | null>(null);
   const openAndGenerate = useWikiStore(s => s.openAndGenerate);
@@ -57,25 +56,6 @@ export function WikiArticleContent({ article, citations, wikiLinks, relatedTags,
   // Create a map of wiki link name (lowercase) to wiki link object
   const wikiLinkMap = new Map(wikiLinks.map(l => [l.target_tag_name.toLowerCase(), l]));
 
-  // Build implicit link detection: find plain-text mentions of known article names
-  const implicitLinkData = useMemo(() => {
-    if (allArticles.length === 0) return null;
-
-    // Exclude self (current article's tag) and names already in explicit wikiLinks
-    const explicitNames = new Set(wikiLinks.map(l => l.target_tag_name.toLowerCase()));
-    const candidates = allArticles
-      .filter(a => a.tag_id !== article.tag_id && !explicitNames.has(a.tag_name.toLowerCase()))
-      .sort((a, b) => b.tag_name.length - a.tag_name.length); // longest first
-
-    if (candidates.length === 0) return null;
-
-    const nameMap = new Map(candidates.map(a => [a.tag_name.toLowerCase(), a]));
-    // Escape regex special chars in names and build a single pattern
-    const escaped = candidates.map(a => a.tag_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-    const pattern = new RegExp(`\\b(${escaped.join('|')})\\b`, 'gi');
-    return { nameMap, pattern };
-  }, [allArticles, wikiLinks, article.tag_id]);
-
   const handleCitationClick = (citation: WikiCitation, element: HTMLElement) => {
     const rect = element.getBoundingClientRect();
     setActiveCitation(citation);
@@ -95,48 +75,11 @@ export function WikiArticleContent({ article, citations, wikiLinks, relatedTags,
     }
   };
 
-  // Process plain text to detect implicit article name mentions
-  const processImplicitLinks = (text: string, keyPrefix: string): (string | JSX.Element)[] => {
-    if (!implicitLinkData) return [text];
-    const { nameMap, pattern } = implicitLinkData;
-    // Reset regex lastIndex for global regex
-    pattern.lastIndex = 0;
-    const result: (string | JSX.Element)[] = [];
-    let lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(text)) !== null) {
-      if (match.index > lastIndex) {
-        result.push(text.slice(lastIndex, match.index));
-      }
-      const matchedText = match[0];
-      const articleSummary = nameMap.get(matchedText.toLowerCase());
-      if (articleSummary) {
-        result.push(
-          <button
-            key={`implicit-${keyPrefix}-${match.index}`}
-            onClick={() => onNavigateToArticle(articleSummary.tag_id, articleSummary.tag_name)}
-            className="text-[var(--color-accent)]/70 hover:text-[var(--color-accent)] underline decoration-dotted decoration-[var(--color-accent)]/40 underline-offset-2 cursor-pointer bg-transparent border-none p-0 font-inherit text-inherit"
-            title={`Go to article: ${articleSummary.tag_name}`}
-          >
-            {matchedText}
-          </button>
-        );
-      } else {
-        result.push(matchedText);
-      }
-      lastIndex = pattern.lastIndex;
-    }
-    if (lastIndex < text.length) {
-      result.push(text.slice(lastIndex));
-    }
-    return result;
-  };
-
   // Process text to replace [N] citations and [[wiki links]] with interactive components
   const processTextWithCitations = (text: string): (string | JSX.Element)[] => {
     // Split on both [N] citations and [[wiki links]]
     const parts = text.split(/(\[\d+\]|\[\[[^\]]+\]\])/g);
-    const withCitationsAndLinks = parts.map((part, i) => {
+    return parts.map((part, i) => {
       // Check for citation [N]
       const citationMatch = part.match(/^\[(\d+)\]$/);
       if (citationMatch) {
@@ -179,19 +122,6 @@ export function WikiArticleContent({ article, citations, wikiLinks, relatedTags,
       // Return raw string so highlighting can be applied
       return part;
     });
-
-    // Second pass: apply implicit link detection to remaining plain-text segments
-    if (!implicitLinkData) return withCitationsAndLinks;
-    const result: (string | JSX.Element)[] = [];
-    for (let i = 0; i < withCitationsAndLinks.length; i++) {
-      const part = withCitationsAndLinks[i];
-      if (typeof part === 'string' && part.length > 0) {
-        result.push(...processImplicitLinks(part, `${i}`));
-      } else {
-        result.push(part);
-      }
-    }
-    return result;
   };
 
   // Process children recursively to handle citations, wiki links, and search highlighting
@@ -216,7 +146,7 @@ export function WikiArticleContent({ article, citations, wikiLinks, relatedTags,
       ));
     }
     return children;
-  }, [isSearchOpen, searchQuery, highlightChildren, wikiLinks, citations, implicitLinkData]);
+  }, [isSearchOpen, searchQuery, highlightChildren, wikiLinks, citations]);
 
   // Custom components for react-markdown
   const components = {
