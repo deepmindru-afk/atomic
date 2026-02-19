@@ -1,7 +1,6 @@
 import { memo } from 'react';
-import { DisplayAtom, AtomSummary } from '../../stores/atoms';
+import { DisplayAtom } from '../../stores/atoms';
 import { TagChip } from '../tags/TagChip';
-import { extractTitleAndSnippet } from '../../lib/markdown';
 import { formatRelativeDate } from '../../lib/date';
 
 interface AtomCardProps {
@@ -94,12 +93,7 @@ export const AtomCard = memo(function AtomCard({
   const handleClick = () => onAtomClick(atom.id);
   const handleRetry = onRetryEmbedding ? () => onRetryEmbedding(atom.id) : undefined;
 
-  // Use snippet for summaries, extractTitleAndSnippet for full atoms (search results)
-  const hasContent = 'content' in atom;
-  const snippetLen = viewMode === 'grid' ? 300 : 200;
-  const { title, snippet } = hasContent
-    ? extractTitleAndSnippet((atom as any).content, snippetLen)
-    : extractTitleAndSnippet((atom as AtomSummary).snippet, snippetLen);
+  const { title, snippet } = atom;
 
   const maxVisibleTags = viewMode === 'grid' ? 2 : 3;
   const visibleTags = atom.tags.slice(0, maxVisibleTags);

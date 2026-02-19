@@ -186,24 +186,12 @@ fn batch_fetch_atoms(conn: &rusqlite::Connection, atom_ids: &[String]) -> Result
     }
     let placeholders = atom_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let query = format!(
-        "SELECT id, content, source_url, created_at, updated_at,
-         COALESCE(embedding_status, 'pending'), COALESCE(tagging_status, 'pending')
-         FROM atoms WHERE id IN ({})",
-        placeholders
+        "SELECT {} FROM atoms WHERE id IN ({})",
+        crate::ATOM_COLUMNS, placeholders
     );
     let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(rusqlite::params_from_iter(atom_ids.iter()), |row| {
-            Ok(Atom {
-                id: row.get(0)?,
-                content: row.get(1)?,
-                source_url: row.get(2)?,
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
-                embedding_status: row.get(5)?,
-                tagging_status: row.get(6)?,
-            })
-        })
+        .query_map(rusqlite::params_from_iter(atom_ids.iter()), crate::atom_from_row)
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;

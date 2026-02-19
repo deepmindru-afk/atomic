@@ -198,7 +198,7 @@ impl Database {
     ///   1. Add a new `if version < N` block at the end (before the virtual-table section)
     ///   2. End the block with `PRAGMA user_version = N;`
     ///   3. Bump LATEST_VERSION
-    const LATEST_VERSION: i32 = 2;
+    const LATEST_VERSION: i32 = 3;
 
     pub fn run_migrations(conn: &Connection) -> Result<(), AtomicCoreError> {
         let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -428,6 +428,32 @@ impl Database {
                  CREATE INDEX IF NOT EXISTS idx_tags_parent_count ON tags(parent_id, atom_count DESC);
                  PRAGMA user_version = 2;",
             )?;
+        }
+
+        // --- V2 → V3: Add title and snippet columns to atoms ---
+        if version < 3 {
+            conn.execute_batch(
+                "ALTER TABLE atoms ADD COLUMN title TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE atoms ADD COLUMN snippet TEXT NOT NULL DEFAULT '';",
+            )?;
+
+            // Backfill title and snippet from existing content
+            {
+                let mut read_stmt = conn.prepare("SELECT id, content FROM atoms")?;
+                let atoms: Vec<(String, String)> = read_stmt
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let mut update_stmt = conn.prepare(
+                    "UPDATE atoms SET title = ?1, snippet = ?2 WHERE id = ?3",
+                )?;
+                for (id, content) in &atoms {
+                    let (title, snippet) = crate::extract_title_and_snippet(content, 300);
+                    update_stmt.execute(rusqlite::params![title, snippet, id])?;
+                }
+            }
+
+            conn.execute_batch("PRAGMA user_version = 3;")?;
         }
 
         // --- Triggers (recreated every startup to stay current) ---

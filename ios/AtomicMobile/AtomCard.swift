@@ -4,11 +4,19 @@ struct AtomCard: View {
     let atom: AtomSummary
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(atom.snippet)
+        VStack(alignment: .leading, spacing: 6) {
+            Text(atom.title.isEmpty ? "Untitled" : atom.title)
                 .font(.subheadline)
+                .fontWeight(.medium)
                 .foregroundStyle(Theme.textPrimary)
-                .lineLimit(4)
+                .lineLimit(1)
+
+            if !atom.snippet.isEmpty {
+                Text(atom.snippet)
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(3)
+            }
 
             HStack(spacing: 8) {
                 if !atom.tags.isEmpty {

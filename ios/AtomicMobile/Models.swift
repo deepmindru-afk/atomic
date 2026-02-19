@@ -22,6 +22,7 @@ struct Atom: Codable, Identifiable, Sendable {
 
 struct AtomSummary: Codable, Identifiable, Sendable {
     let id: String
+    let title: String
     let snippet: String
     let sourceUrl: String?
     let createdAt: String
@@ -31,7 +32,7 @@ struct AtomSummary: Codable, Identifiable, Sendable {
     let tags: [Tag]
 
     enum CodingKeys: String, CodingKey {
-        case id, snippet, tags
+        case id, title, snippet, tags
         case sourceUrl = "source_url"
         case createdAt = "created_at"
         case updatedAt = "updated_at"

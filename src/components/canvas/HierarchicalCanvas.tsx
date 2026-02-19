@@ -113,7 +113,8 @@ export function HierarchicalCanvas() {
       if (node.node_type === 'atom') {
         map.set(node.id, {
           id: node.id,
-          snippet: node.label,
+          title: node.label,
+          snippet: '',
           tags: [],
           source_url: null,
           created_at: '',

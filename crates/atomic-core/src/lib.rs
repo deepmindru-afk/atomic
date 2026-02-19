@@ -256,24 +256,12 @@ impl AtomicCore {
         let conn = self.db.read_conn()?;
 
         let mut stmt = conn
-            .prepare(
-                "SELECT id, content, source_url, created_at, updated_at,
-                 COALESCE(embedding_status, 'pending'), COALESCE(tagging_status, 'pending')
-                 FROM atoms ORDER BY updated_at DESC",
-            )?;
+            .prepare(&format!(
+                "SELECT {} FROM atoms ORDER BY updated_at DESC", ATOM_COLUMNS
+            ))?;
 
         let atoms: Vec<Atom> = stmt
-            .query_map([], |row| {
-                Ok(Atom {
-                    id: row.get(0)?,
-                    content: row.get(1)?,
-                    source_url: row.get(2)?,
-                    created_at: row.get(3)?,
-                    updated_at: row.get(4)?,
-                    embedding_status: row.get(5)?,
-                    tagging_status: row.get(6)?,
-                })
-            })?
+            .query_map([], atom_from_row)?
             .collect::<Result<Vec<_>, _>>()?;
 
         // Batch load all tags in a single query instead of N+1
@@ -295,21 +283,9 @@ impl AtomicCore {
         let conn = self.db.read_conn()?;
 
         let atom_result = conn.query_row(
-            "SELECT id, content, source_url, created_at, updated_at,
-             COALESCE(embedding_status, 'pending'), COALESCE(tagging_status, 'pending')
-             FROM atoms WHERE id = ?1",
+            &format!("SELECT {} FROM atoms WHERE id = ?1", ATOM_COLUMNS),
             [id],
-            |row| {
-                Ok(Atom {
-                    id: row.get(0)?,
-                    content: row.get(1)?,
-                    source_url: row.get(2)?,
-                    created_at: row.get(3)?,
-                    updated_at: row.get(4)?,
-                    embedding_status: row.get(5)?,
-                    tagging_status: row.get(6)?,
-                })
-            },
+            atom_from_row,
         );
 
         match atom_result {
@@ -337,14 +313,15 @@ impl AtomicCore {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let embedding_status = "pending";
+        let (title, snippet) = extract_title_and_snippet(&request.content, 300);
 
         {
             let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
 
             conn.execute(
-                "INSERT INTO atoms (id, content, source_url, created_at, updated_at, embedding_status)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                (&id, &request.content, &request.source_url, &now, &now, &embedding_status),
+                "INSERT INTO atoms (id, content, source_url, created_at, updated_at, embedding_status, title, snippet)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                (&id, &request.content, &request.source_url, &now, &now, &embedding_status, &title, &snippet),
             )
             ?;
 
@@ -362,6 +339,8 @@ impl AtomicCore {
         let atom = Atom {
             id: id.clone(),
             content: request.content.clone(),
+            title: title.clone(),
+            snippet: snippet.clone(),
             source_url: request.source_url,
             created_at: now.clone(),
             updated_at: now,
@@ -397,14 +376,16 @@ impl AtomicCore {
     {
         let now = Utc::now().to_rfc3339();
         let embedding_status = "pending";
+        let (title, snippet) = extract_title_and_snippet(&request.content, 300);
 
         {
             let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
 
             conn.execute(
-                "UPDATE atoms SET content = ?1, source_url = ?2, updated_at = ?3, embedding_status = ?4
-                 WHERE id = ?5",
-                (&request.content, &request.source_url, &now, &embedding_status, id),
+                "UPDATE atoms SET content = ?1, source_url = ?2, updated_at = ?3, embedding_status = ?4,
+                 title = ?5, snippet = ?6
+                 WHERE id = ?7",
+                (&request.content, &request.source_url, &now, &embedding_status, &title, &snippet, id),
             )
             ?;
 
@@ -425,21 +406,9 @@ impl AtomicCore {
         let atom = {
             let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
             conn.query_row(
-                "SELECT id, content, source_url, created_at, updated_at,
-                 COALESCE(embedding_status, 'pending'), COALESCE(tagging_status, 'pending')
-                 FROM atoms WHERE id = ?1",
+                &format!("SELECT {} FROM atoms WHERE id = ?1", ATOM_COLUMNS),
                 [id],
-                |row| {
-                    Ok(Atom {
-                        id: row.get(0)?,
-                        content: row.get(1)?,
-                        source_url: row.get(2)?,
-                        created_at: row.get(3)?,
-                        updated_at: row.get(4)?,
-                        embedding_status: row.get(5)?,
-                        tagging_status: row.get(6)?,
-                    })
-                },
+                atom_from_row,
             )
             ?
         };
@@ -476,34 +445,23 @@ impl AtomicCore {
     pub fn get_atoms_by_tag(&self, tag_id: &str) -> Result<Vec<AtomWithTags>, AtomicCoreError> {
         let conn = self.db.read_conn()?;
 
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "WITH RECURSIVE descendant_tags(id) AS (
                 SELECT ?1
                 UNION ALL
                 SELECT t.id FROM tags t
                 INNER JOIN descendant_tags dt ON t.parent_id = dt.id
             )
-            SELECT a.id, a.content, a.source_url, a.created_at, a.updated_at,
-                COALESCE(a.embedding_status, 'pending'), COALESCE(a.tagging_status, 'pending')
+            SELECT {ATOM_COLUMNS_A}
             FROM atom_tags at
             INNER JOIN atoms a ON a.id = at.atom_id
             WHERE at.tag_id IN (SELECT id FROM descendant_tags)
             GROUP BY a.id
             ORDER BY a.updated_at DESC",
-        )?;
+        ))?;
 
         let atoms: Vec<Atom> = stmt
-            .query_map(rusqlite::params![tag_id], |row| {
-                Ok(Atom {
-                    id: row.get(0)?,
-                    content: row.get(1)?,
-                    source_url: row.get(2)?,
-                    created_at: row.get(3)?,
-                    updated_at: row.get(4)?,
-                    embedding_status: row.get(5)?,
-                    tagging_status: row.get(6)?,
-                })
-            })?
+            .query_map(rusqlite::params![tag_id], atom_from_row)?
             .collect::<Result<Vec<_>, _>>()?;
 
         // Batch load tags for the fetched atoms
@@ -546,7 +504,7 @@ impl AtomicCore {
         // Count: leaf tags read the denormalized atom_count column (instant).
         // Root tags (with children) fall back to COUNT(DISTINCT) since atoms
         // can be tagged with multiple children, making SUM overcount.
-        type AtomRow = (String, String, Option<String>, String, String, String, String);
+        type AtomRow = (String, String, String, Option<String>, String, String, String, String);
         let (total_count, atoms): (i32, Vec<AtomRow>) = if let Some(tid) = tag_id {
             let has_children: bool = conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM tags WHERE parent_id = ?1)",
@@ -572,7 +530,7 @@ impl AtomicCore {
             };
             let rows = if use_cursor {
                 let mut stmt = conn.prepare(
-                    "SELECT a.id, SUBSTR(a.content, 1, 250), a.source_url,
+                    "SELECT a.id, a.title, a.snippet, a.source_url,
                         a.created_at, a.updated_at,
                         COALESCE(a.embedding_status, 'pending'), COALESCE(a.tagging_status, 'pending')
                     FROM atoms a
@@ -589,12 +547,12 @@ impl AtomicCore {
                 )?;
                 let rows = stmt.query_map(
                     rusqlite::params![tid, cursor.unwrap(), cursor_id.unwrap(), limit],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?)),
                 )?.collect::<Result<Vec<_>, _>>()?;
                 rows
             } else {
                 let mut stmt = conn.prepare(
-                    "SELECT a.id, SUBSTR(a.content, 1, 250), a.source_url,
+                    "SELECT a.id, a.title, a.snippet, a.source_url,
                         a.created_at, a.updated_at,
                         COALESCE(a.embedding_status, 'pending'), COALESCE(a.tagging_status, 'pending')
                     FROM atoms a
@@ -609,7 +567,7 @@ impl AtomicCore {
                     LIMIT ?2 OFFSET ?3",
                 )?;
                 let rows = stmt.query_map(rusqlite::params![tid, limit, offset], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?))
                 })?.collect::<Result<Vec<_>, _>>()?;
                 rows
             };
@@ -617,7 +575,7 @@ impl AtomicCore {
         } else if use_cursor {
             let count: i32 = conn.query_row("SELECT COUNT(*) FROM atoms", [], |row| row.get(0))?;
             let mut stmt = conn.prepare(
-                "SELECT id, SUBSTR(content, 1, 250), source_url,
+                "SELECT id, title, snippet, source_url,
                  created_at, updated_at,
                  COALESCE(embedding_status, 'pending'), COALESCE(tagging_status, 'pending')
                  FROM atoms
@@ -626,19 +584,19 @@ impl AtomicCore {
                  LIMIT ?3",
             )?;
             let rows = stmt.query_map(rusqlite::params![cursor.unwrap(), cursor_id.unwrap(), limit], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?))
             })?.collect::<Result<Vec<_>, _>>()?;
             (count, rows)
         } else {
             let count: i32 = conn.query_row("SELECT COUNT(*) FROM atoms", [], |row| row.get(0))?;
             let mut stmt = conn.prepare(
-                "SELECT id, SUBSTR(content, 1, 250), source_url,
+                "SELECT id, title, snippet, source_url,
                  created_at, updated_at,
                  COALESCE(embedding_status, 'pending'), COALESCE(tagging_status, 'pending')
                  FROM atoms ORDER BY updated_at DESC, id DESC LIMIT ?1 OFFSET ?2",
             )?;
             let rows = stmt.query_map(rusqlite::params![limit, offset], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?))
             })?.collect::<Result<Vec<_>, _>>()?;
             (count, rows)
         };
@@ -649,16 +607,16 @@ impl AtomicCore {
 
         // Extract cursor from the last result for keyset pagination
         let (next_cursor, next_cursor_id) = atoms.last().map(|last| {
-            (Some(last.4.clone()), Some(last.0.clone()))
+            (Some(last.5.clone()), Some(last.0.clone()))
         }).unwrap_or((None, None));
 
         let summaries: Vec<AtomSummary> = atoms
             .into_iter()
-            .map(|(id, raw_snippet, source_url, created_at, updated_at, embedding_status, tagging_status)| {
+            .map(|(id, title, snippet, source_url, created_at, updated_at, embedding_status, tagging_status)| {
                 let tags = tag_map.get(&id).cloned().unwrap_or_default();
-                let snippet = strip_markdown_simple(&raw_snippet);
                 AtomSummary {
                     id,
+                    title,
                     snippet,
                     source_url,
                     created_at,
@@ -1228,24 +1186,12 @@ impl AtomicCore {
     pub fn get_atoms_with_embeddings(&self) -> Result<Vec<AtomWithEmbedding>, AtomicCoreError> {
         let conn = self.db.read_conn()?;
 
-        let mut stmt = conn.prepare(
-            "SELECT id, content, source_url, created_at, updated_at,
-             COALESCE(embedding_status, 'pending'), COALESCE(tagging_status, 'pending')
-             FROM atoms ORDER BY updated_at DESC",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {} FROM atoms ORDER BY updated_at DESC", ATOM_COLUMNS
+        ))?;
 
         let atoms: Vec<Atom> = stmt
-            .query_map([], |row| {
-                Ok(Atom {
-                    id: row.get(0)?,
-                    content: row.get(1)?,
-                    source_url: row.get(2)?,
-                    created_at: row.get(3)?,
-                    updated_at: row.get(4)?,
-                    embedding_status: row.get(5)?,
-                    tagging_status: row.get(6)?,
-                })
-            })?
+            .query_map([], atom_from_row)?
             .collect::<Result<Vec<_>, _>>()?;
 
         let tag_map = get_all_atom_tags_map(&conn)?;
@@ -1687,15 +1633,18 @@ impl AtomicCore {
             }
 
             let atom_id = Uuid::new_v4().to_string();
+            let (title, snippet) = extract_title_and_snippet(&note.content, 300);
             match conn.execute(
-                "INSERT INTO atoms (id, content, source_url, created_at, updated_at, embedding_status, tagging_status)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'pending', 'pending')",
+                "INSERT INTO atoms (id, content, source_url, created_at, updated_at, embedding_status, tagging_status, title, snippet)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'pending', 'pending', ?6, ?7)",
                 rusqlite::params![
                     &atom_id,
                     &note.content,
                     &note.source_url,
                     &note.created_at,
                     &note.updated_at,
+                    &title,
+                    &snippet,
                 ],
             ) {
                 Ok(_) => {
@@ -2103,24 +2052,12 @@ fn build_neighborhood_graph(
     // Batch fetch atom data
     let atom_placeholders = atom_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let atom_query = format!(
-        "SELECT id, content, source_url, created_at, updated_at,
-                COALESCE(embedding_status, 'pending'), COALESCE(tagging_status, 'pending')
-         FROM atoms WHERE id IN ({})",
-        atom_placeholders
+        "SELECT {} FROM atoms WHERE id IN ({})",
+        ATOM_COLUMNS, atom_placeholders
     );
     let mut atom_stmt = conn.prepare(&atom_query)?;
     let atom_rows: Vec<Atom> = atom_stmt
-        .query_map(rusqlite::params_from_iter(atom_ids.iter()), |row| {
-            Ok(Atom {
-                id: row.get(0)?,
-                content: row.get(1)?,
-                source_url: row.get(2)?,
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
-                embedding_status: row.get(5)?,
-                tagging_status: row.get(6)?,
-            })
-        })?
+        .query_map(rusqlite::params_from_iter(atom_ids.iter()), atom_from_row)?
         .collect::<Result<Vec<_>, _>>()?;
     let atom_lookup: HashMap<String, Atom> = atom_rows.into_iter().map(|a| (a.id.clone(), a)).collect();
 
@@ -2265,40 +2202,15 @@ fn strip_images_from_text(text: &str) -> String {
     out
 }
 
-/// Simple markdown stripping for snippets (server-side).
-/// Preserves newlines between lines so the frontend can split title from body.
-fn strip_markdown_simple(text: &str) -> String {
-    let mut result = String::with_capacity(text.len());
-    for line in text.lines() {
-        let trimmed = line.trim();
-        // Skip code fence markers
-        if trimmed.starts_with("```") {
-            continue;
-        }
-        // Strip heading markers
-        let stripped = if trimmed.starts_with('#') {
-            trimmed.trim_start_matches('#').trim_start()
-        } else {
-            trimmed
-        };
-        if !stripped.is_empty() {
-            if !result.is_empty() {
-                result.push('\n');
-            }
-            result.push_str(stripped);
-        }
-    }
-    // Strip inline markdown: bold, italic, links, inline code, images
-    let result = result
-        .replace("**", "")
-        .replace("__", "");
-    // Simple regex-free link removal: [text](url) -> text
-    let mut out = String::with_capacity(result.len());
-    let mut chars = result.chars().peekable();
+/// Strip inline markdown from a single line: bold, italic, images, links, inline code.
+fn strip_inline_markdown(text: &str) -> String {
+    let text = text.replace("**", "").replace("__", "");
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
     while let Some(ch) = chars.next() {
         if ch == '!' && chars.peek() == Some(&'[') {
-            // Image: ![alt](url) -> skip
-            chars.next(); // consume '['
+            // Image: ![alt](url) -> skip entirely
+            chars.next();
             let mut depth = 1;
             while depth > 0 {
                 match chars.next() {
@@ -2343,7 +2255,6 @@ fn strip_markdown_simple(text: &str) -> String {
                         _ => {}
                     }
                 }
-                // Strip nested images from link text: ![alt](url) -> empty
                 let cleaned = strip_images_from_text(&text_buf);
                 out.push_str(cleaned.trim());
             } else {
@@ -2352,7 +2263,6 @@ fn strip_markdown_simple(text: &str) -> String {
                 out.push(']');
             }
         } else if ch == '`' {
-            // Inline code: `code` -> code
             while let Some(c) = chars.next() {
                 if c == '`' { break; }
                 out.push(c);
@@ -2361,13 +2271,110 @@ fn strip_markdown_simple(text: &str) -> String {
             out.push(ch);
         }
     }
-    // Truncate to ~200 chars
-    if out.len() > 200 {
-        let truncated: String = out.chars().take(200).collect();
-        format!("{}...", truncated.trim_end())
-    } else {
-        out
+    out
+}
+
+/// Check if a line is non-text content that should be skipped in snippets.
+fn is_non_text_line(trimmed: &str) -> bool {
+    trimmed.starts_with("```") ||                              // code fence
+    trimmed.starts_with("![") ||                               // image
+    trimmed.chars().all(|c| c == '-' || c == '*' || c == '_' || c == ' ') && trimmed.len() >= 3 || // hr
+    (trimmed.starts_with("http://") || trimmed.starts_with("https://")) && !trimmed.contains(' ') // bare URL
+}
+
+/// Extract a plain-text title (first line) and snippet (subsequent text) from markdown content.
+/// Strips all markdown formatting. Skips images, bare URLs, code fences, and horizontal rules
+/// from the snippet. Returns (title, snippet) with snippet up to `max_snippet_len` characters.
+pub fn extract_title_and_snippet(content: &str, max_snippet_len: usize) -> (String, String) {
+    let mut title = String::new();
+    let mut snippet = String::new();
+    let mut in_code_block = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Track code blocks
+        if trimmed.starts_with("```") {
+            in_code_block = !in_code_block;
+            continue;
+        }
+
+        // Skip empty lines and content inside code blocks
+        if trimmed.is_empty() || in_code_block {
+            continue;
+        }
+
+        // Skip non-text lines (images, bare URLs, horizontal rules) for both title and snippet
+        if is_non_text_line(trimmed) {
+            continue;
+        }
+
+        // First text line becomes the title
+        if title.is_empty() {
+            let stripped = if trimmed.starts_with('#') {
+                trimmed.trim_start_matches('#').trim_start()
+            } else {
+                trimmed
+            };
+            let candidate = strip_inline_markdown(stripped).trim().to_string();
+            if !candidate.is_empty() {
+                title = candidate;
+            }
+            continue;
+        }
+
+        // Strip heading markers
+        let stripped = if trimmed.starts_with('#') {
+            trimmed.trim_start_matches('#').trim_start()
+        } else {
+            trimmed
+        };
+
+        let plain = strip_inline_markdown(stripped);
+        let plain = plain.trim();
+        if plain.is_empty() {
+            continue;
+        }
+
+        if !snippet.is_empty() {
+            snippet.push(' ');
+        }
+        snippet.push_str(plain);
+
+        // Stop once we have enough
+        if snippet.len() >= max_snippet_len {
+            break;
+        }
     }
+
+    // Truncate snippet to max length
+    if snippet.len() > max_snippet_len {
+        let truncated: String = snippet.chars().take(max_snippet_len).collect();
+        snippet = format!("{}...", truncated.trim_end());
+    }
+
+    (title, snippet)
+}
+
+/// Standard SELECT columns for reading an Atom from the DB.
+pub(crate) const ATOM_COLUMNS: &str = "id, content, title, snippet, source_url, created_at, updated_at, COALESCE(embedding_status, 'pending'), COALESCE(tagging_status, 'pending')";
+
+/// Same columns but table-aliased for JOINs.
+pub(crate) const ATOM_COLUMNS_A: &str = "a.id, a.content, a.title, a.snippet, a.source_url, a.created_at, a.updated_at, COALESCE(a.embedding_status, 'pending'), COALESCE(a.tagging_status, 'pending')";
+
+/// Parse an Atom from a row selected with ATOM_COLUMNS.
+pub(crate) fn atom_from_row(row: &rusqlite::Row) -> rusqlite::Result<Atom> {
+    Ok(Atom {
+        id: row.get(0)?,
+        content: row.get(1)?,
+        title: row.get(2)?,
+        snippet: row.get(3)?,
+        source_url: row.get(4)?,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
+        embedding_status: row.get(7)?,
+        tagging_status: row.get(8)?,
+    })
 }
 
 /// Get tags for a specific atom

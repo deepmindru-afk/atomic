@@ -50,11 +50,11 @@ export const AtomNode = memo(function AtomNode({
   onClick,
   atomId,
 }: AtomNodeProps) {
-  // Use snippet (already stripped of markdown), truncate to ~50 chars
+  // Use title if available, fall back to snippet
   const displayContent = useMemo(() => {
-    const text = atom.snippet || 'Empty atom';
+    const text = atom.title || atom.snippet || 'Empty atom';
     return text.length > 50 ? text.substring(0, 47) + '...' : text;
-  }, [atom.snippet]);
+  }, [atom.title, atom.snippet]);
 
   // Get color from primary tag
   const tagColor = useMemo(() => {

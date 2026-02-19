@@ -20,42 +20,6 @@ export function truncateContent(content: string, maxLength: number = 150): strin
   return plainText.slice(0, maxLength).trim() + '...';
 }
 
-/** Lines that are purely non-text content (images, bare URLs, horizontal rules, etc.) */
-function isNonTextLine(line: string): boolean {
-  const trimmed = line.trim();
-  return (
-    /^!\[.*\]\(.*\)$/.test(trimmed) ||          // image
-    /^https?:\/\/\S+$/.test(trimmed) ||          // bare URL
-    /^[-*_]{3,}$/.test(trimmed) ||               // horizontal rule
-    /^```/.test(trimmed) ||                       // code fence boundary
-    trimmed === ''
-  );
-}
-
-export function extractTitleAndSnippet(content: string, snippetMaxLength: number = 120): { title: string; snippet: string } {
-  const lines = content.split('\n').filter(line => line.trim().length > 0);
-
-  if (lines.length === 0) {
-    return { title: '', snippet: '' };
-  }
-
-  const title = stripMarkdown(lines[0]).trim();
-
-  if (lines.length === 1) {
-    return { title, snippet: '' };
-  }
-
-  // Filter out non-text lines (images, bare links, rules) from the snippet
-  const contentLines = lines.slice(1).filter(line => !isNonTextLine(line));
-  const restContent = contentLines.join(' ');
-  const snippet = stripMarkdown(restContent).replace(/\s+/g, ' ').trim();
-
-  if (snippet.length <= snippetMaxLength) {
-    return { title, snippet };
-  }
-
-  return { title, snippet: snippet.slice(0, snippetMaxLength).trim() + '...' };
-}
 
 export function isValidUrl(url: string): boolean {
   try {

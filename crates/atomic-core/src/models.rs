@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 pub struct Atom {
     pub id: String,
     pub content: String,
+    pub title: String,
+    pub snippet: String,
     pub source_url: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -52,6 +54,7 @@ pub struct PaginatedTagChildren {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AtomSummary {
     pub id: String,
+    pub title: String,
     pub snippet: String,
     pub source_url: Option<String>,
     pub created_at: String,

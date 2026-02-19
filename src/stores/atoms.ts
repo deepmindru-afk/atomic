@@ -4,6 +4,8 @@ import { getTransport } from '../lib/transport';
 export interface Atom {
   id: string;
   content: string;
+  title: string;
+  snippet: string;
   source_url: string | null;
   created_at: string;
   updated_at: string;
@@ -24,6 +26,7 @@ export interface AtomWithTags extends Atom {
 
 export interface AtomSummary {
   id: string;
+  title: string;
   snippet: string;
   source_url: string | null;
   created_at: string;
@@ -45,6 +48,8 @@ export interface PaginatedAtoms {
 export interface SemanticSearchResult {
   id: string;
   content: string;
+  title: string;
+  snippet: string;
   source_url: string | null;
   created_at: string;
   updated_at: string;
@@ -59,6 +64,8 @@ export interface SemanticSearchResult {
 export interface SimilarAtomResult {
   id: string;
   content: string;
+  title: string;
+  snippet: string;
   source_url: string | null;
   created_at: string;
   updated_at: string;
@@ -116,13 +123,10 @@ interface AtomsStore {
 
 /** Convert an AtomWithTags (full content) to AtomSummary shape for the store */
 function toSummary(atom: AtomWithTags): AtomSummary {
-  // Extract first ~250 chars, stripping basic markdown but preserving newlines for title/snippet split
-  const lines = atom.content.split('\n').filter(l => l.trim());
-  const plain = lines.map(l => l.replace(/^#{1,6}\s/, '').replace(/\*\*/g, '')).join('\n');
-  const snippet = plain.length > 250 ? plain.slice(0, 250).trim() + '...' : plain;
   return {
     id: atom.id,
-    snippet,
+    title: atom.title,
+    snippet: atom.snippet,
     source_url: atom.source_url,
     created_at: atom.created_at,
     updated_at: atom.updated_at,
