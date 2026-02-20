@@ -364,6 +364,159 @@ impl AtomicCore {
         Ok(AtomWithTags { atom, tags })
     }
 
+    /// Create multiple atoms in a single transaction and trigger batch embedding.
+    ///
+    /// All atoms are inserted in one transaction for efficiency. After commit,
+    /// a single batch embedding task is spawned for all atoms.
+    /// Atoms with a `source_url` that already exists in the database are skipped.
+    /// Cap: 1000 atoms per call.
+    pub fn create_atoms_bulk<F>(
+        &self,
+        requests: Vec<CreateAtomRequest>,
+        on_event: F,
+    ) -> Result<BulkCreateResult, AtomicCoreError>
+    where
+        F: Fn(EmbeddingEvent) + Send + Sync + Clone + 'static,
+    {
+        if requests.is_empty() {
+            return Err(AtomicCoreError::Validation(
+                "At least one atom is required".to_string(),
+            ));
+        }
+        if requests.len() > 1000 {
+            return Err(AtomicCoreError::Validation(
+                "Maximum 1000 atoms per bulk create".to_string(),
+            ));
+        }
+
+        let now = Utc::now().to_rfc3339();
+        let mut atoms_with_tags: Vec<AtomWithTags> = Vec::with_capacity(requests.len());
+        let mut embedding_pairs: Vec<(String, String)> = Vec::with_capacity(requests.len());
+        let mut skipped: usize = 0;
+
+        {
+            let conn = self
+                .db
+                .conn
+                .lock()
+                .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+
+            // Build set of existing source_urls for deduplication
+            let source_urls: Vec<&str> = requests
+                .iter()
+                .filter_map(|r| r.source_url.as_deref())
+                .collect();
+
+            let mut existing_urls: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            if !source_urls.is_empty() {
+                let placeholders: String = source_urls.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let query = format!(
+                    "SELECT source_url FROM atoms WHERE source_url IN ({})",
+                    placeholders
+                );
+                let mut stmt = conn.prepare(&query)?;
+                let rows = stmt.query_map(
+                    rusqlite::params_from_iter(source_urls.iter()),
+                    |row| row.get::<_, String>(0),
+                )?;
+                for row in rows {
+                    existing_urls.insert(row?);
+                }
+            }
+
+            conn.execute_batch("BEGIN")?;
+
+            for request in &requests {
+                // Skip if source_url already exists
+                if let Some(ref url) = request.source_url {
+                    if existing_urls.contains(url) {
+                        skipped += 1;
+                        continue;
+                    }
+                }
+
+                let id = Uuid::new_v4().to_string();
+                let (title, snippet) = extract_title_and_snippet(&request.content, 300);
+
+                if let Err(e) = conn.execute(
+                    "INSERT INTO atoms (id, content, source_url, created_at, updated_at, embedding_status, title, snippet)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    (&id, &request.content, &request.source_url, &now, &now, &"pending", &title, &snippet),
+                ) {
+                    conn.execute_batch("ROLLBACK")?;
+                    return Err(AtomicCoreError::Database(e));
+                }
+
+                for tag_id in &request.tag_ids {
+                    if let Err(e) = conn.execute(
+                        "INSERT INTO atom_tags (atom_id, tag_id) VALUES (?1, ?2)",
+                        (&id, tag_id),
+                    ) {
+                        conn.execute_batch("ROLLBACK")?;
+                        return Err(AtomicCoreError::Database(e));
+                    }
+                }
+
+                let atom = Atom {
+                    id: id.clone(),
+                    content: request.content.clone(),
+                    title: title.clone(),
+                    snippet: snippet.clone(),
+                    source_url: request.source_url.clone(),
+                    created_at: now.clone(),
+                    updated_at: now.clone(),
+                    embedding_status: "pending".to_string(),
+                    tagging_status: "pending".to_string(),
+                };
+
+                embedding_pairs.push((id.clone(), request.content.clone()));
+                // Tags will be resolved after commit
+                atoms_with_tags.push(AtomWithTags {
+                    atom,
+                    tags: vec![],
+                });
+            }
+
+            conn.execute_batch("COMMIT")?;
+
+            // Now resolve tags for each atom
+            for atom_with_tags in &mut atoms_with_tags {
+                atom_with_tags.tags = get_tags_for_atom(&conn, &atom_with_tags.atom.id)?;
+            }
+        }
+
+        // Spawn batch embedding (same pattern as import_obsidian_vault)
+        if !embedding_pairs.is_empty() {
+            {
+                let conn = self
+                    .db
+                    .conn
+                    .lock()
+                    .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+                for (atom_id, _) in &embedding_pairs {
+                    let _ = conn.execute(
+                        "UPDATE atoms SET embedding_status = 'processing' WHERE id = ?1",
+                        [atom_id],
+                    );
+                }
+            }
+
+            let db_clone = Arc::clone(&self.db);
+            tokio::spawn(async move {
+                embedding::process_embedding_batch(db_clone, embedding_pairs, false, on_event)
+                    .await;
+            });
+        }
+
+        let count = atoms_with_tags.len();
+        Ok(BulkCreateResult {
+            atoms: atoms_with_tags,
+            count,
+            skipped,
+        })
+    }
+
     /// Update an existing atom and trigger re-embedding
     pub fn update_atom<F>(
         &self,

@@ -377,6 +377,7 @@ impl Database {
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_atoms_updated_id ON atoms(updated_at DESC, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_atoms_source_url ON atoms(source_url) WHERE source_url IS NOT NULL;
                 CREATE INDEX IF NOT EXISTS idx_atoms_embedding_status ON atoms(embedding_status);
                 CREATE INDEX IF NOT EXISTS idx_atoms_tagging_status ON atoms(tagging_status);
                 CREATE INDEX IF NOT EXISTS idx_atom_tags_tag_atom ON atom_tags(tag_id, atom_id);

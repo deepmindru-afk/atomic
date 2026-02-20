@@ -79,6 +79,14 @@ pub struct PaginatedAtoms {
     pub next_cursor_id: Option<String>,
 }
 
+/// Result struct for bulk atom creation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkCreateResult {
+    pub atoms: Vec<AtomWithTags>,
+    pub count: usize,
+    pub skipped: usize,
+}
+
 /// Result struct for similar atom search
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimilarAtomResult {

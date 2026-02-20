@@ -46,6 +46,7 @@ function flattenVisibleTags(
 
 export function TagTree() {
   const tags = useTagsStore(s => s.tags);
+  const isLoading = useTagsStore(s => s.isLoading);
   const createTag = useTagsStore(s => s.createTag);
   const updateTag = useTagsStore(s => s.updateTag);
   const deleteTag = useTagsStore(s => s.deleteTag);
@@ -243,7 +244,16 @@ export function TagTree() {
 
       {/* Virtualized tag list */}
       <div ref={scrollContainerRef} className="flex-1 overflow-y-auto scrollbar-hidden">
-        {tags.length === 0 ? (
+        {tags.length === 0 && isLoading ? (
+          <div className="flex flex-col gap-1 px-2 py-1">
+            {Array.from({ length: 5 }, (_, i) => (
+              <div key={i} className="flex items-center gap-2 px-2 py-1.5">
+                <div className="w-4 h-4 rounded bg-[var(--color-bg-card)] animate-pulse" />
+                <div className="h-3.5 rounded bg-[var(--color-bg-card)] animate-pulse" style={{ width: `${60 + i * 15}px` }} />
+              </div>
+            ))}
+          </div>
+        ) : tags.length === 0 ? (
           <div className="px-3 py-4 text-sm text-[var(--color-text-tertiary)] text-center">
             No tags yet
           </div>

@@ -83,6 +83,35 @@ pub async fn create_atom(
     }
 }
 
+pub async fn bulk_create_atoms(
+    state: web::Data<AppState>,
+    body: web::Json<Vec<CreateAtomRequest>>,
+) -> HttpResponse {
+    let requests: Vec<atomic_core::CreateAtomRequest> = body
+        .into_inner()
+        .into_iter()
+        .map(|r| atomic_core::CreateAtomRequest {
+            content: r.content,
+            source_url: r.source_url,
+            tag_ids: r.tag_ids,
+        })
+        .collect();
+    let on_event = embedding_event_callback(state.event_tx.clone());
+    let core = state.core.clone();
+    let event_tx = state.event_tx.clone();
+    match web::block(move || core.create_atoms_bulk(requests, on_event)).await {
+        Ok(Ok(result)) => {
+            for atom in &result.atoms {
+                let _ = event_tx.send(ServerEvent::AtomCreated { atom: atom.clone() });
+            }
+            HttpResponse::Created().json(result)
+        }
+        Ok(Err(e)) => crate::error::error_response(e),
+        Err(e) => HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct UpdateAtomRequest {
     pub content: String,
