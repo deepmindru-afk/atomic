@@ -199,6 +199,7 @@ export const AtomCard = memo(function AtomCard({
         embeddingStatus={atom.embedding_status}
         taggingStatus={atom.tagging_status}
         onRetry={handleRetry}
+        onRetryTagging={handleRetryTagging}
       />
       <div className="flex-1 min-h-0 overflow-hidden">
         <div className="flex items-baseline justify-between gap-2">
