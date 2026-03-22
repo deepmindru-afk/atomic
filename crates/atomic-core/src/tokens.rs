@@ -14,7 +14,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 /// Token metadata returned to callers (never contains the raw token or hash)
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ApiTokenInfo {
     pub id: String,
     pub name: String,

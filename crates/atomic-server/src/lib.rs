@@ -195,8 +195,8 @@ pub use utoipa_scalar::{Scalar, Servable};
         routes::import::ImportObsidianRequest,
         routes::ingest::IngestUrlRequest,
         routes::ingest::IngestUrlsRequest,
-        routes::feeds::CreateFeedRequest,
-        routes::feeds::UpdateFeedRequest,
+        atomic_core::CreateFeedRequest,
+        atomic_core::UpdateFeedRequest,
         error::ApiErrorResponse,
     )),
     tags(

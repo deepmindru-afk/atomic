@@ -3,7 +3,7 @@
 //! Each test spins up a real actix-web test server backed by a temporary SQLite
 //! database and exercises the endpoints with actual HTTP requests.
 
-use actix_web::{test as actix_test, web, App};
+use actix_web::{test as actix_test, web, App, ResponseError};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -400,8 +400,15 @@ async fn test_unauthenticated_request_rejected() {
     let req = actix_test::TestRequest::get()
         .uri("/api/atoms")
         .to_request();
-    let resp = actix_test::try_call_service(&app, req).await;
-    assert!(resp.is_err(), "should reject unauthenticated request");
+    // The middleware may return an actix error (Err) or a proper 401 response (Ok).
+    // Handle both: what matters is that the status is 401, not 200.
+    match actix_test::try_call_service(&app, req).await {
+        Ok(resp) => assert_eq!(resp.status(), 401, "should return 401 Unauthorized"),
+        Err(err) => {
+            let resp = err.error_response();
+            assert_eq!(resp.status(), 401, "should return 401 Unauthorized");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

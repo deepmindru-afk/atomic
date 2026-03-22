@@ -3,11 +3,11 @@
 //! This module contains all the core data structures used throughout the library.
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 // ==================== Core KB Types ====================
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Atom {
     pub id: String,
     pub content: String,
@@ -22,7 +22,8 @@ pub struct Atom {
     pub tagging_status: String,   // 'pending', 'processing', 'complete', 'failed', 'skipped'
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Tag {
     pub id: String,
     pub name: String,
@@ -30,15 +31,17 @@ pub struct Tag {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AtomWithTags {
     #[serde(flatten)]
     pub atom: Atom,
     pub tags: Vec<Tag>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-#[schema(no_recursion)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(no_recursion))]
 pub struct TagWithCount {
     #[serde(flatten)]
     pub tag: Tag,
@@ -48,14 +51,16 @@ pub struct TagWithCount {
 }
 
 /// Paginated response for tag children
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PaginatedTagChildren {
     pub children: Vec<TagWithCount>,
     pub total: i32,
 }
 
 /// Lightweight atom summary for paginated list views (no full content)
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AtomSummary {
     pub id: String,
     pub title: String,
@@ -71,7 +76,8 @@ pub struct AtomSummary {
 }
 
 /// Paginated response for atom list
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PaginatedAtoms {
     pub atoms: Vec<AtomSummary>,
     pub total_count: i32,
@@ -86,7 +92,8 @@ pub struct PaginatedAtoms {
 }
 
 /// Result struct for bulk atom creation
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BulkCreateResult {
     pub atoms: Vec<AtomWithTags>,
     pub count: usize,
@@ -94,7 +101,8 @@ pub struct BulkCreateResult {
 }
 
 /// Result struct for similar atom search
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SimilarAtomResult {
     #[serde(flatten)]
     pub atom: AtomWithTags,
@@ -104,7 +112,8 @@ pub struct SimilarAtomResult {
 }
 
 /// Result struct for semantic search
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SemanticSearchResult {
     #[serde(flatten)]
     pub atom: AtomWithTags,
@@ -142,7 +151,8 @@ pub struct ChunkData {
 }
 
 /// Wiki article for a tag
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct WikiArticle {
     pub id: String,
     pub tag_id: String,
@@ -153,7 +163,8 @@ pub struct WikiArticle {
 }
 
 /// Citation linking article content to source atom/chunk
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct WikiCitation {
     pub id: String,
     pub citation_index: i32,
@@ -163,14 +174,16 @@ pub struct WikiCitation {
 }
 
 /// Wiki article with all its citations
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct WikiArticleWithCitations {
     pub article: WikiArticle,
     pub citations: Vec<WikiCitation>,
 }
 
 /// Status of a wiki article for quick checks
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct WikiArticleStatus {
     pub has_article: bool,
     pub article_atom_count: i32,
@@ -180,7 +193,8 @@ pub struct WikiArticleStatus {
 }
 
 /// Summary of a wiki article for list view (includes tag name)
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct WikiArticleSummary {
     pub id: String,
     pub tag_id: String,
@@ -191,7 +205,8 @@ pub struct WikiArticleSummary {
 }
 
 /// Inter-article wiki link (cross-reference between wiki articles)
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct WikiLink {
     pub id: String,
     pub source_article_id: String,
@@ -201,7 +216,8 @@ pub struct WikiLink {
 }
 
 /// Tag related to another tag by semantic connectivity
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RelatedTag {
     pub tag_id: String,
     pub tag_name: String,
@@ -212,7 +228,8 @@ pub struct RelatedTag {
 }
 
 /// Suggested wiki article for tags that don't have articles yet
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SuggestedArticle {
     pub tag_id: String,
     pub tag_name: String,
@@ -222,7 +239,8 @@ pub struct SuggestedArticle {
 }
 
 /// Archived version of a wiki article
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct WikiArticleVersion {
     pub id: String,
     pub tag_id: String,
@@ -234,7 +252,8 @@ pub struct WikiArticleVersion {
 }
 
 /// Summary of a wiki article version for list views
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct WikiVersionSummary {
     pub id: String,
     pub version_number: i32,
@@ -252,7 +271,8 @@ pub struct ChunkWithContext {
 }
 
 /// Position of an atom on the canvas
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AtomPosition {
     pub atom_id: String,
     pub x: f64,
@@ -260,7 +280,8 @@ pub struct AtomPosition {
 }
 
 /// Atom with its average embedding vector for similarity calculations
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AtomWithEmbedding {
     #[serde(flatten)]
     pub atom: AtomWithTags,
@@ -270,7 +291,8 @@ pub struct AtomWithEmbedding {
 // ==================== Semantic Graph Types ====================
 
 /// Pre-computed semantic edge between two atoms
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SemanticEdge {
     pub id: String,
     pub source_atom_id: String,
@@ -282,7 +304,8 @@ pub struct SemanticEdge {
 }
 
 /// Neighborhood graph for local graph view
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct NeighborhoodGraph {
     pub center_atom_id: String,
     pub atoms: Vec<NeighborhoodAtom>,
@@ -290,7 +313,8 @@ pub struct NeighborhoodGraph {
 }
 
 /// Atom in a neighborhood graph with depth info
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct NeighborhoodAtom {
     #[serde(flatten)]
     pub atom: AtomWithTags,
@@ -298,7 +322,8 @@ pub struct NeighborhoodAtom {
 }
 
 /// Edge in a neighborhood graph (combines tag and semantic connections)
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct NeighborhoodEdge {
     pub source_id: String,
     pub target_id: String,
@@ -309,7 +334,8 @@ pub struct NeighborhoodEdge {
 }
 
 /// Atom cluster assignment
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AtomCluster {
     pub cluster_id: i32,
     pub atom_ids: Vec<String>,
@@ -319,7 +345,8 @@ pub struct AtomCluster {
 // ==================== Canvas Hierarchy Types ====================
 
 /// Type of node in the hierarchical canvas view
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum CanvasNodeType {
     Category,
@@ -329,7 +356,8 @@ pub enum CanvasNodeType {
 }
 
 /// A node in the hierarchical canvas view
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CanvasNode {
     pub id: String,
     pub node_type: CanvasNodeType,
@@ -341,7 +369,8 @@ pub struct CanvasNode {
 }
 
 /// An edge between two nodes at the same level
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CanvasEdge {
     pub source_id: String,
     pub target_id: String,
@@ -349,14 +378,16 @@ pub struct CanvasEdge {
 }
 
 /// Entry in the breadcrumb navigation trail
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BreadcrumbEntry {
     pub id: String,
     pub label: String,
 }
 
 /// A single level in the hierarchical canvas, returned by get_canvas_level()
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CanvasLevel {
     pub parent_id: Option<String>,
     pub parent_label: Option<String>,
@@ -370,7 +401,8 @@ pub struct CanvasLevel {
 // even though chat is not part of atomic-core's scope.
 
 /// Chat conversation
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Conversation {
     pub id: String,
     pub title: Option<String>,
@@ -380,7 +412,8 @@ pub struct Conversation {
 }
 
 /// Conversation with its tag scope and summary info
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ConversationWithTags {
     #[serde(flatten)]
     pub conversation: Conversation,
@@ -390,7 +423,8 @@ pub struct ConversationWithTags {
 }
 
 /// Conversation with full message history
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ConversationWithMessages {
     #[serde(flatten)]
     pub conversation: Conversation,
@@ -399,7 +433,8 @@ pub struct ConversationWithMessages {
 }
 
 /// Chat message
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ChatMessage {
     pub id: String,
     pub conversation_id: String,
@@ -410,7 +445,8 @@ pub struct ChatMessage {
 }
 
 /// Message with tool calls and citations
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ChatMessageWithContext {
     #[serde(flatten)]
     pub message: ChatMessage,
@@ -419,7 +455,8 @@ pub struct ChatMessageWithContext {
 }
 
 /// Tool call record
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ChatToolCall {
     pub id: String,
     pub message_id: String,
@@ -432,7 +469,8 @@ pub struct ChatToolCall {
 }
 
 /// Citation in a chat message
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ChatCitation {
     pub id: String,
     pub message_id: String,
@@ -445,7 +483,8 @@ pub struct ChatCitation {
 
 // ==================== Feed Types ====================
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Feed {
     pub id: String,
     pub url: String,
@@ -459,7 +498,8 @@ pub struct Feed {
     pub tag_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateFeedRequest {
     pub url: String,
     #[serde(default = "default_poll_interval")]
@@ -472,7 +512,8 @@ fn default_poll_interval() -> i32 {
     60
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateFeedRequest {
     pub poll_interval: Option<i32>,
     pub is_paused: Option<bool>,
@@ -526,7 +567,8 @@ pub struct ListAtomsParams {
 }
 
 /// Source with atom count for filter dropdown
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SourceInfo {
     pub source: String,
     pub atom_count: i32,
