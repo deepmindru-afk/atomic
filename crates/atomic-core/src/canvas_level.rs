@@ -1271,7 +1271,7 @@ fn compute_edges_for_atom_set(
 
     let mut kept: HashSet<(String, String)> = HashSet::new();
     for (_atom_id, mut atom_edges) in per_atom {
-        atom_edges.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
+        atom_edges.sort_by(|a, b| b.2.total_cmp(&a.2));
         for (src, tgt, _) in atom_edges.into_iter().take(TOP_K_EDGES_PER_ATOM) {
             let key = if src < tgt { (src, tgt) } else { (tgt, src) };
             kept.insert(key);
