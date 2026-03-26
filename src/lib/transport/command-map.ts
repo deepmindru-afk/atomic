@@ -148,6 +148,10 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     method: 'POST',
     path: (a) => `/api/embeddings/retry/${encodeURIComponent(a.atomId as string)}`,
   },
+  retry_tagging: {
+    method: 'POST',
+    path: (a) => `/api/tagging/retry/${encodeURIComponent(a.atomId as string)}`,
+  },
   reset_stuck_processing: {
     method: 'POST',
     path: '/api/embeddings/reset-stuck',
@@ -235,6 +239,13 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
   get_available_llm_models: {
     method: 'GET',
     path: '/api/settings/models',
+  },
+  test_openai_compat_connection: {
+    method: 'POST',
+    path: '/api/settings/test-openai-compat',
+    argsMode: 'body',
+    transformArgs: (a) => ({ base_url: a.baseUrl, api_key: a.apiKey }),
+    transformResponse: (d: any) => d.success as boolean,
   },
 
   // ==================== Canvas ====================

@@ -1207,6 +1207,7 @@ impl AtomicCore {
         let config = ProviderConfig::from_settings(&settings_map);
         let model = match config.provider_type {
             ProviderType::Ollama => config.llm_model().to_string(),
+            ProviderType::OpenAICompat => config.llm_model().to_string(),
             ProviderType::OpenRouter => settings_map
                 .get("wiki_model")
                 .cloned()
@@ -1407,6 +1408,34 @@ impl AtomicCore {
             on_event,
             self.settings_for_background(),
         );
+
+        Ok(())
+    }
+
+    /// Retry tagging for a specific atom
+    pub fn retry_tagging<F>(&self, atom_id: &str, on_event: F) -> Result<(), AtomicCoreError>
+    where
+        F: Fn(EmbeddingEvent) + Send + Sync + Clone + 'static,
+    {
+        {
+            let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+            // Verify atom exists
+            conn.query_row("SELECT id FROM atoms WHERE id = ?1", [atom_id], |_| Ok(()))
+                .map_err(|_| AtomicCoreError::NotFound(format!("Atom {} not found", atom_id)))?;
+            // Reset tagging status to pending
+            conn.execute(
+                "UPDATE atoms SET tagging_status = 'pending' WHERE id = ?1",
+                [atom_id],
+            )?;
+        }
+
+        let db = Arc::clone(&self.db);
+        let atom_id = atom_id.to_string();
+        let bg_settings = self.settings_for_background();
+        executor::spawn(async move {
+            let settings = bg_settings.unwrap_or_default();
+            embedding::process_tagging_batch_with_settings(db, vec![atom_id], on_event, settings).await;
+        });
 
         Ok(())
     }
@@ -1849,7 +1878,7 @@ impl AtomicCore {
     where
         F: Fn(EmbeddingEvent) + Send + Sync + Clone + 'static,
     {
-        let dimension_affecting_keys = ["provider", "embedding_model", "ollama_embedding_model"];
+        let dimension_affecting_keys = ["provider", "embedding_model", "ollama_embedding_model", "openai_compat_embedding_model", "openai_compat_embedding_dimension"];
         let mut dimension_changed = false;
 
         {
@@ -1952,6 +1981,7 @@ impl AtomicCore {
                 Ok(config.openrouter_api_key.as_ref().map_or(false, |k| !k.is_empty()))
             }
             ProviderType::Ollama => Ok(!config.ollama_host.is_empty()),
+            ProviderType::OpenAICompat => Ok(!config.openai_compat_base_url.is_empty()),
         }
     }
 

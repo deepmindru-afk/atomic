@@ -15,12 +15,19 @@ pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("ollama_host", DEFAULT_OLLAMA_HOST),
     ("ollama_embedding_model", "nomic-embed-text"),
     ("ollama_llm_model", "llama3.2"),
+    ("ollama_context_length", "65536"),
+    ("openrouter_context_length", ""),
     ("embedding_model", "openai/text-embedding-3-small"),
     ("tagging_model", "openai/gpt-4o-mini"),
     ("wiki_model", "anthropic/claude-sonnet-4.5"),
     ("wiki_strategy", "centroid"),
     ("chat_model", "anthropic/claude-sonnet-4.5"),
     ("auto_tagging_enabled", "true"),
+    ("openai_compat_base_url", ""),
+    ("openai_compat_embedding_model", ""),
+    ("openai_compat_llm_model", ""),
+    ("openai_compat_embedding_dimension", "1536"),
+    ("openai_compat_context_length", "65536"),
 ];
 
 /// Migrate settings - add any missing default settings

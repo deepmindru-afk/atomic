@@ -4,6 +4,7 @@
 pub mod error;
 pub mod models;
 pub mod ollama;
+pub mod openai_compat;
 pub mod openrouter;
 pub mod traits;
 pub mod types;
@@ -14,6 +15,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 pub use error::ProviderError;
 pub use models::{fetch_and_return_capabilities, get_cached_capabilities_sync, save_capabilities_cache, AvailableModel};
 pub use ollama::OllamaProvider;
+pub use openai_compat::OpenAICompatProvider;
 pub use openrouter::OpenRouterProvider;
 pub use traits::{EmbeddingConfig, EmbeddingProvider, LlmConfig, LlmProvider, StreamingLlmProvider};
 
@@ -22,12 +24,14 @@ pub use traits::{EmbeddingConfig, EmbeddingProvider, LlmConfig, LlmProvider, Str
 pub enum ProviderType {
     OpenRouter,
     Ollama,
+    OpenAICompat,
 }
 
 impl ProviderType {
     pub fn from_string(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "ollama" => ProviderType::Ollama,
+            "openai_compat" => ProviderType::OpenAICompat,
             _ => ProviderType::OpenRouter,
         }
     }
@@ -41,10 +45,20 @@ pub struct ProviderConfig {
     pub openrouter_api_key: Option<String>,
     pub openrouter_embedding_model: String,
     pub openrouter_llm_model: String,
+    /// User-specified context length override. None = use model default from API cache.
+    pub openrouter_context_length: Option<usize>,
     // Ollama settings
     pub ollama_host: String,
     pub ollama_embedding_model: String,
     pub ollama_llm_model: String,
+    pub ollama_context_length: usize,
+    // OpenAI-compatible settings
+    pub openai_compat_base_url: String,
+    pub openai_compat_api_key: Option<String>,
+    pub openai_compat_embedding_model: String,
+    pub openai_compat_llm_model: String,
+    pub openai_compat_embedding_dimension: usize,
+    pub openai_compat_context_length: usize,
 }
 
 impl ProviderConfig {
@@ -62,6 +76,8 @@ impl ProviderConfig {
             openrouter_llm_model: settings.get("tagging_model")
                 .cloned()
                 .unwrap_or_else(|| "openai/gpt-4o-mini".to_string()),
+            openrouter_context_length: settings.get("openrouter_context_length")
+                .and_then(|s| if s.is_empty() { None } else { s.parse().ok() }),
             ollama_host: settings.get("ollama_host")
                 .cloned()
                 .unwrap_or_else(|| "http://127.0.0.1:11434".to_string()),
@@ -71,6 +87,27 @@ impl ProviderConfig {
             ollama_llm_model: settings.get("ollama_llm_model")
                 .cloned()
                 .unwrap_or_else(|| "llama3.2".to_string()),
+            ollama_context_length: settings.get("ollama_context_length")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(65536),
+            openai_compat_base_url: settings.get("openai_compat_base_url")
+                .cloned()
+                .unwrap_or_default(),
+            openai_compat_api_key: settings.get("openai_compat_api_key")
+                .cloned()
+                .filter(|k| !k.is_empty()),
+            openai_compat_embedding_model: settings.get("openai_compat_embedding_model")
+                .cloned()
+                .unwrap_or_default(),
+            openai_compat_llm_model: settings.get("openai_compat_llm_model")
+                .cloned()
+                .unwrap_or_default(),
+            openai_compat_embedding_dimension: settings.get("openai_compat_embedding_dimension")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1536),
+            openai_compat_context_length: settings.get("openai_compat_context_length")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(65536),
         }
     }
 
@@ -79,6 +116,7 @@ impl ProviderConfig {
         match self.provider_type {
             ProviderType::OpenRouter => &self.openrouter_embedding_model,
             ProviderType::Ollama => &self.ollama_embedding_model,
+            ProviderType::OpenAICompat => &self.openai_compat_embedding_model,
         }
     }
 
@@ -87,6 +125,7 @@ impl ProviderConfig {
         match self.provider_type {
             ProviderType::OpenRouter => &self.openrouter_llm_model,
             ProviderType::Ollama => &self.ollama_llm_model,
+            ProviderType::OpenAICompat => &self.openai_compat_llm_model,
         }
     }
 
@@ -103,6 +142,41 @@ impl ProviderConfig {
             ProviderType::Ollama => {
                 ollama::get_embedding_dimension(&self.ollama_embedding_model)
             }
+            ProviderType::OpenAICompat => self.openai_compat_embedding_dimension,
+        }
+    }
+
+    /// Get the context length (in tokens) for the current provider's LLM.
+    /// For OpenRouter: uses user override if set, otherwise looks up the model's
+    /// context length from the in-memory capabilities cache, falling back to None.
+    /// For Ollama/OpenAI-compat: uses the user-specified setting.
+    pub fn context_length(&self) -> Option<usize> {
+        match self.provider_type {
+            ProviderType::OpenRouter => {
+                if let Some(ctx) = self.openrouter_context_length {
+                    return Some(ctx);
+                }
+                // Fall back to model metadata from capabilities cache
+                let cache = CAPABILITIES_CACHE.inner.lock().ok()?;
+                cache.as_ref()?.context_lengths.get(&self.openrouter_llm_model).copied()
+            }
+            ProviderType::Ollama => Some(self.ollama_context_length),
+            ProviderType::OpenAICompat => Some(self.openai_compat_context_length),
+        }
+    }
+
+    /// Get the context length for a specific model (used when the active model
+    /// differs from the default LLM model, e.g. wiki_model or chat_model).
+    pub fn context_length_for_model(&self, model: &str) -> Option<usize> {
+        match self.provider_type {
+            ProviderType::OpenRouter => {
+                if let Some(ctx) = self.openrouter_context_length {
+                    return Some(ctx);
+                }
+                let cache = CAPABILITIES_CACHE.inner.lock().ok()?;
+                cache.as_ref()?.context_lengths.get(model).copied()
+            }
+            _ => self.context_length(),
         }
     }
 }
@@ -118,6 +192,15 @@ pub fn create_embedding_provider(config: &ProviderConfig) -> Result<Arc<dyn Embe
         ProviderType::Ollama => {
             Ok(Arc::new(OllamaProvider::new(Some(config.ollama_host.clone()))))
         }
+        ProviderType::OpenAICompat => {
+            if config.openai_compat_base_url.is_empty() {
+                return Err(ProviderError::Configuration("OpenAI Compatible base URL not configured".to_string()));
+            }
+            Ok(Arc::new(OpenAICompatProvider::new(
+                config.openai_compat_base_url.clone(),
+                config.openai_compat_api_key.clone(),
+            )))
+        }
     }
 }
 
@@ -132,6 +215,15 @@ pub fn create_llm_provider(config: &ProviderConfig) -> Result<Arc<dyn LlmProvide
         ProviderType::Ollama => {
             Ok(Arc::new(OllamaProvider::new(Some(config.ollama_host.clone()))))
         }
+        ProviderType::OpenAICompat => {
+            if config.openai_compat_base_url.is_empty() {
+                return Err(ProviderError::Configuration("OpenAI Compatible base URL not configured".to_string()));
+            }
+            Ok(Arc::new(OpenAICompatProvider::new(
+                config.openai_compat_base_url.clone(),
+                config.openai_compat_api_key.clone(),
+            )))
+        }
     }
 }
 
@@ -145,6 +237,15 @@ pub fn create_streaming_llm_provider(config: &ProviderConfig) -> Result<Arc<dyn 
         }
         ProviderType::Ollama => {
             Ok(Arc::new(OllamaProvider::new(Some(config.ollama_host.clone()))))
+        }
+        ProviderType::OpenAICompat => {
+            if config.openai_compat_base_url.is_empty() {
+                return Err(ProviderError::Configuration("OpenAI Compatible base URL not configured".to_string()));
+            }
+            Ok(Arc::new(OpenAICompatProvider::new(
+                config.openai_compat_base_url.clone(),
+                config.openai_compat_api_key.clone(),
+            )))
         }
     }
 }

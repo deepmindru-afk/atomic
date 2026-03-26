@@ -28,6 +28,11 @@ export async function retryEmbedding(atomId: string): Promise<void> {
   return getTransport().invoke('retry_embedding', { atomId });
 }
 
+// Retry tagging
+export async function retryTagging(atomId: string): Promise<void> {
+  return getTransport().invoke('retry_tagging', { atomId });
+}
+
 // Reset atoms stuck in 'processing' state (call on app startup)
 export async function resetStuckProcessing(): Promise<number> {
   return getTransport().invoke('reset_stuck_processing');
@@ -248,6 +253,10 @@ export interface OllamaModel {
 
 export async function testOllamaConnection(host: string): Promise<boolean> {
   return getTransport().invoke('test_ollama', { host });
+}
+
+export async function testOpenAICompatConnection(baseUrl: string, apiKey?: string): Promise<boolean> {
+  return getTransport().invoke('test_openai_compat_connection', { baseUrl, apiKey });
 }
 
 export async function getOllamaModels(host: string): Promise<OllamaModel[]> {
