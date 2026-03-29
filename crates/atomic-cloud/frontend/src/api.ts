@@ -61,6 +61,15 @@ export interface InstanceStatus {
   created_at: string;
 }
 
+export async function exchangeSession(
+  sessionId: string
+): Promise<{ management_token?: string; status: string }> {
+  const resp = await fetch(
+    `${API_BASE}/api/checkout/session?session_id=${encodeURIComponent(sessionId)}`
+  );
+  return resp.json();
+}
+
 export async function getInstanceStatus(): Promise<InstanceStatus> {
   return apiFetch("/api/instance/status");
 }

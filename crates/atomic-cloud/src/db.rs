@@ -150,6 +150,19 @@ pub async fn create_instance(
     .map_err(CloudError::from)
 }
 
+pub async fn get_instance_by_customer_id(
+    pool: &PgPool,
+    customer_id: Uuid,
+) -> Result<Option<Instance>, CloudError> {
+    sqlx::query_as::<_, Instance>(
+        "SELECT * FROM instances WHERE customer_id = $1 AND status != 'destroyed' ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(customer_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(CloudError::from)
+}
+
 pub async fn get_instance_by_id(
     pool: &PgPool,
     instance_id: Uuid,

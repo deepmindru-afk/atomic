@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
-import { setToken, getInstanceStatus } from "../api";
+import { setToken, hasToken, getInstanceStatus, exchangeSession } from "../api";
 
 type ProvisioningStage = "initializing" | "provisioning" | "starting" | "ready";
 
@@ -18,16 +18,36 @@ export default function Success() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    const token = searchParams.get("token");
-    if (token) {
-      setToken(token);
+    const sessionId = searchParams.get("session_id");
+    if (!sessionId && !hasToken()) {
+      setError("Missing session information.");
+      return;
     }
 
-    // Poll for instance status
     let cancelled = false;
-    const poll = async () => {
+
+    const run = async () => {
+      // Step 1: Exchange session ID for management token (if we don't have one)
+      if (!hasToken() && sessionId) {
+        while (!cancelled) {
+          try {
+            const result = await exchangeSession(sessionId);
+            if (result.management_token) {
+              setToken(result.management_token);
+              break;
+            }
+            // Webhook hasn't processed yet — retry
+          } catch {
+            // Server may not have the session yet
+          }
+          await new Promise((r) => setTimeout(r, 2000));
+        }
+      }
+
+      if (cancelled) return;
       setStage("provisioning");
 
+      // Step 2: Poll for instance status
       while (!cancelled) {
         try {
           const status = await getInstanceStatus();
@@ -55,8 +75,8 @@ export default function Success() {
       }
     };
 
-    // Small delay before first poll to let webhook process
-    const timeout = setTimeout(poll, 3000);
+    // Small delay before starting
+    const timeout = setTimeout(run, 1000);
     return () => {
       cancelled = true;
       clearTimeout(timeout);

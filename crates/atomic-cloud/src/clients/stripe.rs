@@ -62,6 +62,31 @@ impl StripeClient {
             .ok_or_else(|| CloudError::Stripe("No URL in checkout session response".into()))
     }
 
+    /// Retrieve a Checkout Session by ID
+    pub async fn retrieve_checkout_session(
+        &self,
+        session_id: &str,
+    ) -> Result<serde_json::Value, CloudError> {
+        let url = format!("https://api.stripe.com/v1/checkout/sessions/{}", session_id);
+
+        let resp = self
+            .http
+            .get(&url)
+            .basic_auth(&self.secret_key, None::<&str>)
+            .send()
+            .await
+            .map_err(|e| CloudError::Stripe(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CloudError::Stripe(format!("Retrieve session failed: {body}")));
+        }
+
+        resp.json()
+            .await
+            .map_err(|e| CloudError::Stripe(e.to_string()))
+    }
+
     /// Create a Stripe Customer Portal session and return the URL
     pub async fn create_portal_session(
         &self,
@@ -126,6 +151,21 @@ impl StripeClient {
         if signatures.is_empty() {
             return Err(CloudError::BadRequest(
                 "Missing webhook signature".into(),
+            ));
+        }
+
+        // Reject events older than 5 minutes (Stripe recommendation)
+        const TOLERANCE_SECS: i64 = 300;
+        let ts: i64 = timestamp
+            .parse()
+            .map_err(|_| CloudError::BadRequest("Invalid webhook timestamp".into()))?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        if (now - ts).abs() > TOLERANCE_SECS {
+            return Err(CloudError::BadRequest(
+                "Webhook timestamp too old".into(),
             ));
         }
 

@@ -116,6 +116,59 @@ pub async fn check_subdomain(
     }
 }
 
+#[derive(Deserialize)]
+pub struct SessionQuery {
+    pub session_id: String,
+}
+
+/// GET /api/checkout/session — exchange a Stripe Checkout session ID for a management token.
+/// Called by the frontend after Stripe redirects back to /success?session_id=xxx.
+pub async fn exchange_session(
+    state: web::Data<CloudState>,
+    query: web::Query<SessionQuery>,
+) -> HttpResponse {
+    // Retrieve the checkout session from Stripe to get the customer ID
+    let session = match state
+        .stripe
+        .retrieve_checkout_session(&query.session_id)
+        .await
+    {
+        Ok(s) => s,
+        Err(e) => return e.to_response(),
+    };
+
+    let stripe_customer_id = match session["customer"].as_str() {
+        Some(id) => id,
+        None => return CloudError::BadRequest("Session has no customer".into()).to_response(),
+    };
+
+    // Look up the customer and their instance
+    let customer = match crate::db::get_customer_by_stripe_id(&state.db, stripe_customer_id).await {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            // Webhook may not have processed yet — tell the frontend to retry
+            return HttpResponse::Accepted().json(serde_json::json!({
+                "status": "pending",
+                "message": "Instance is being set up, please retry"
+            }));
+        }
+        Err(e) => return e.to_response(),
+    };
+
+    match crate::db::get_instance_by_customer_id(&state.db, customer.id).await {
+        Ok(Some(instance)) => HttpResponse::Ok().json(serde_json::json!({
+            "management_token": instance.management_token,
+            "instance_id": instance.id,
+            "status": instance.status,
+        })),
+        Ok(None) => HttpResponse::Accepted().json(serde_json::json!({
+            "status": "pending",
+            "message": "Instance is being set up, please retry"
+        })),
+        Err(e) => e.to_response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

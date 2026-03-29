@@ -108,7 +108,7 @@ export default function Dashboard() {
             Your Instance
           </h1>
           <p className="text-text-secondary">
-            {instance.subdomain}.atomic.so
+            {instance.subdomain_url.replace("https://", "")}
           </p>
         </div>
 

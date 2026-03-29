@@ -11,6 +11,10 @@ pub fn configure_public_routes(cfg: &mut web::ServiceConfig) {
             "/api/checkout/check-subdomain",
             web::get().to(checkout::check_subdomain),
         )
+        .route(
+            "/api/checkout/session",
+            web::get().to(checkout::exchange_session),
+        )
         .route("/api/stripe/webhook", web::post().to(webhooks::handle_webhook));
 }
 

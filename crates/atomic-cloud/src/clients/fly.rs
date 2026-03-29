@@ -265,6 +265,33 @@ impl FlyClient {
         Ok(())
     }
 
+    /// Destroy a volume permanently
+    pub async fn destroy_volume(
+        &self,
+        app_name: &str,
+        volume_id: &str,
+    ) -> Result<(), CloudError> {
+        let url = format!(
+            "{}/apps/{}/volumes/{}",
+            FLY_API_BASE, app_name, volume_id
+        );
+
+        let resp = self
+            .inner.http
+            .delete(&url)
+            .header("Authorization", self.auth_header())
+            .send()
+            .await
+            .map_err(|e| CloudError::Fly(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CloudError::Fly(format!("Destroy volume failed: {body}")));
+        }
+
+        Ok(())
+    }
+
     /// Update a machine's image (for auto-updates)
     pub async fn update_machine_image(
         &self,
