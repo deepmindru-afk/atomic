@@ -13,6 +13,10 @@ import {
   type CanvasTheme,
 } from './sigma/themes';
 
+function truncLabel(str: string, max: number): string {
+  return str.length > max ? str.substring(0, max - 1) + '\u2026' : str;
+}
+
 export function SigmaCanvas() {
   const openDrawer = useUIStore(s => s.openDrawer);
   const selectedTagId = useUIStore(s => s.selectedTagId);
@@ -92,7 +96,8 @@ export function SigmaCanvas() {
         y: atom.y * scale,
         size: 2.5 + connectivity * 5,
         color: nodeColor(theme, connectivity),
-        label: atom.title || atom.atom_id.substring(0, 8),
+        label: truncLabel(atom.title || atom.atom_id.substring(0, 8), 30),
+        fullLabel: atom.title || atom.atom_id.substring(0, 8),
         connectivity,
         tagIds: atom.tag_ids,
       });
@@ -133,7 +138,7 @@ export function SigmaCanvas() {
       stagePadding: 40,
       defaultDrawNodeHover: (context, data, settings) => {
         const size = data.size || 4;
-        const label = data.label || '';
+        const label = (data as any).fullLabel || data.label || '';
         const font = `${settings.labelFont || 'sans-serif'}`;
         const fontSize = 13;
         context.font = `${fontSize}px ${font}`;
