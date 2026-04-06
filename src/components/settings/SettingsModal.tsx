@@ -16,7 +16,6 @@ import {
   testOllamaConnection,
   testOpenAICompatConnection,
   getOllamaModels,
-  importObsidianVault,
   getMcpConfig,
   listApiTokens,
   createApiToken,
@@ -42,6 +41,7 @@ import {
 } from '../../lib/api';
 import { getTransport, switchTransport, switchToLocal, isDesktopApp, isLocalServer, type HttpTransportConfig } from '../../lib/transport';
 import { pickDirectory } from '../../lib/platform';
+import { importMarkdownFolder } from '../../lib/import';
 import { formatRelativeDate } from '../../lib/date';
 import { useDatabasesStore, type DatabaseInfo, type DatabaseStats } from '../../stores/databases';
 
@@ -864,7 +864,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
       setIsImporting(true);
 
-      const result = await importObsidianVault(selected);
+      const result = await importMarkdownFolder(selected);
       setImportResult(result);
 
       // Refresh atoms and tags to show imported content
@@ -2125,8 +2125,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
               {/* ===== INTEGRATIONS TAB ===== */}
               {activeTab === 'integrations' && (
                 <>
-                  {/* Import Section — desktop + local server only (requires filesystem access) */}
-                  {isDesktopApp() && isLocalServer() && (
+                  {/* Import Section — desktop only (reads files locally, creates atoms via API) */}
+                  {isDesktopApp() && (
                     <div className="space-y-3">
                       <div className="space-y-1">
                         <label className="block text-sm font-medium text-[var(--color-text-primary)]">
